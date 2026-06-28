@@ -13,12 +13,12 @@ between layers.
 
 | Repo | What it is |
 |------|------------|
-| [**ManifoldKit**](https://github.com/roryford/ManifoldKit) | Core: UI, runtime, persistence, and the in-core (cloud + Foundation) backends. |
-| [**manifold-llama**](https://github.com/roryford/manifold-llama) | On-device GGUF / llama.cpp backend family. |
-| [**manifold-mlx**](https://github.com/roryford/manifold-mlx) | On-device MLX backend family (text + image generation). |
+| [**ManifoldKit**](https://github.com/ManifoldKit/ManifoldKit) | Core: UI, runtime, persistence, and the in-core (cloud + Foundation) backends. |
+| [**manifold-llama**](https://github.com/ManifoldKit/manifold-llama) | On-device GGUF / llama.cpp backend family. |
+| [**manifold-mlx**](https://github.com/ManifoldKit/manifold-mlx) | On-device MLX backend family (text + image generation). |
 
 ### Links
 
 - 🌐 [manifoldkit.com](https://manifoldkit.com)
-- 📘 [Documentation](https://roryford.github.io/ManifoldKit/documentation/manifoldkit/)
-- 🚀 [Quickstart](https://github.com/roryford/ManifoldKit#hello-world) · iOS 18+ / macOS 15+ · Swift 6
+- 📘 [Documentation](https://docs.manifoldkit.com/documentation/manifoldkit/)
+- 🚀 [Quickstart](https://github.com/ManifoldKit/ManifoldKit#hello-world) · iOS 18+ / macOS 15+ · Swift 6
