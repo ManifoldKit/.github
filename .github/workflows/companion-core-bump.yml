@@ -1,0 +1,194 @@
+name: Companion core-bump (reusable)
+
+# Reusable `workflow_call` port of the core-bump workflow that manifold-llama
+# and manifold-mlx each carried as a ~135-line local copy (already drifted
+# once: mlx's pin-rewrite regex still targeted a stale `roryford/ManifoldKit`
+# path). Callers keep their own repository_dispatch/workflow_dispatch/cron
+# triggers and a small job that resolves the target version, then call this
+# workflow via `jobs.<id>.uses`.
+#
+# What it does, gated on a real green build:
+#   1. Rewrite this repo's ManifoldKit pin to `version` using the regex
+#      selected by `pin-mode` (see the two variants below). No-op (exits
+#      clean) if the pin is already at that version — safe to re-dispatch.
+#   2. Re-resolve, then run `gate-command` against the new core (defaults to
+#      `swift build && swift test`, mirroring core's ci.yml invocation).
+#   3. Commit Package.swift + Package.resolved, open a `fix:` PR, and
+#      admin-squash-merge it. The merge push is authored by the caller's
+#      RELEASE_AUTOMERGE_TOKEN PAT (not the default GITHUB_TOKEN) so that a
+#      downstream push-triggered release-please workflow fires. The default
+#      token would NOT trigger that downstream workflow — hence the PAT.
+#
+# Requires secret RELEASE_AUTOMERGE_TOKEN: a fine-grained PAT on the caller
+# repo with Contents: read+write and Pull requests: read+write. This is
+# required even when `trip-release-please` is false (the PR still needs to
+# be opened and merged) — the boolean only gates the informational step that
+# documents the downstream release-please trigger; eval has no such workflow.
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: >
+          ManifoldKit version to pin to, WITHOUT a leading "v" (e.g. "0.63.0").
+          Callers resolve this from their own trigger payload (repository_dispatch
+          client_payload.tag, workflow_dispatch input, etc.) before calling this
+          workflow.
+        required: true
+        type: string
+      pin-mode:
+        description: >
+          Which pin-rewrite regex to run. "upToNextMinor" targets
+          `.upToNextMinor(from: "X.Y.Z")` (manifold-llama, manifold-mlx).
+          "exact" targets `exact: "X.Y.Z"` (manifold-eval, which pins an
+          exact ManifoldKit version rather than floating on a floor).
+        required: false
+        type: string
+        default: upToNextMinor
+      gate-command:
+        description: >
+          Shell command that builds and tests the companion against the
+          newly-resolved core pin. Runs after `swift package resolve`.
+        required: false
+        type: string
+        default: "swift build && swift test"
+      trip-release-please:
+        description: >
+          Whether the caller repo has a push-triggered release-please
+          workflow that this bump's merge should fire. Set false for repos
+          (e.g. manifold-eval) with no release-please workflow — this only
+          skips the informational trigger step, not the PR merge itself.
+        required: false
+        type: boolean
+        default: true
+    secrets:
+      RELEASE_AUTOMERGE_TOKEN:
+        description: >
+          Fine-grained PAT with Contents: read+write and Pull requests:
+          read+write on the caller repo. Required unconditionally.
+        required: true
+
+# Serialize: never let two bumps race on the same caller repo. The group
+# name is fixed (not keyed on github.repository) because each caller invokes
+# this workflow from within its OWN workflow run, so the group is already
+# scoped per-repo by GitHub Actions' run context.
+concurrency:
+  group: core-bump
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  bump:
+    runs-on: macos-15
+    steps:
+      - name: Validate version input
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::version input '$VERSION' is not an X.Y.Z version (no leading 'v')." >&2
+            exit 1
+          fi
+          echo "Target pin floor/exact: $VERSION (pin-mode: ${{ inputs.pin-mode }})"
+
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          # PAT so the eventual merge push triggers the caller's release-please.
+          token: ${{ secrets.RELEASE_AUTOMERGE_TOKEN }}
+
+      - name: Rewrite ManifoldKit pin
+        id: edit
+        env:
+          VERSION: ${{ inputs.version }}
+          PIN_MODE: ${{ inputs.pin-mode }}
+        run: |
+          set -euo pipefail
+          case "$PIN_MODE" in
+            upToNextMinor)
+              # Matches manifold-llama / manifold-mlx style:
+              #   .package(url: "https://github.com/ManifoldKit/ManifoldKit", .upToNextMinor(from: "X.Y.Z"))
+              perl -0pi -e 's{(ManifoldKit/ManifoldKit(?:\.git)?"[^\n]*\.upToNextMinor\(from:\s*")[0-9]+\.[0-9]+\.[0-9]+(")}{${1}'"$VERSION"'${2}}g' Package.swift
+              ;;
+            exact)
+              # Matches manifold-eval style:
+              #   .package(url: "https://github.com/ManifoldKit/ManifoldKit.git", exact: "X.Y.Z")
+              perl -0pi -e 's{(ManifoldKit/ManifoldKit(?:\.git)?"[^\n]*exact:\s*")[0-9]+\.[0-9]+\.[0-9]+(")}{${1}'"$VERSION"'${2}}g' Package.swift
+              ;;
+            *)
+              echo "::error::Unknown pin-mode '$PIN_MODE' (expected upToNextMinor or exact)." >&2
+              exit 1
+              ;;
+          esac
+          if git diff --quiet -- Package.swift; then
+            echo "Pin already at $VERSION — nothing to do."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            git --no-pager diff -- Package.swift
+          fi
+
+      - name: Select newest Xcode 26 toolchain
+        if: steps.edit.outputs.changed == 'true'
+        # The image default mis-resolves the dependency graph; Swift 6.3
+        # (Xcode 26.3) prunes the trait-disabled edges correctly.
+        run: |
+          sudo xcode-select -s "$(find /Applications -maxdepth 1 -name 'Xcode_26*.app' | sort -V | tail -1)/Contents/Developer"
+          swift --version
+
+      - name: Re-resolve against new core
+        if: steps.edit.outputs.changed == 'true'
+        run: swift package resolve
+
+      - name: Run gate command
+        if: steps.edit.outputs.changed == 'true'
+        # Flow the input through env rather than interpolating
+        # ${{ inputs.gate-command }} directly into the run: body — same
+        # rationale as VERSION/PIN_MODE above: a literal-text substitution is
+        # a template-injection surface for reusable workflows (a value
+        # containing YAML- or script-breaking characters can splice into the
+        # surrounding step rather than just running as the intended command).
+        # Callers are trusted org repos, so this is defense-in-depth, not a
+        # response to an active threat.
+        env:
+          GATE_COMMAND: ${{ inputs.gate-command }}
+        run: |
+          set -euo pipefail
+          eval "$GATE_COMMAND"
+
+      - name: Open and merge bump PR
+        if: steps.edit.outputs.changed == 'true'
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_AUTOMERGE_TOKEN }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          TAG="v${VERSION}"
+          BRANCH="auto/bump-manifoldkit-${TAG}"
+          git config user.name "manifold-release-bot"
+          git config user.email "noreply@github.com"
+          git checkout -b "$BRANCH"
+          git add Package.swift Package.resolved
+          git commit -m "fix: bump ManifoldKit pin to ${TAG}"
+          git push --force-with-lease origin "$BRANCH"
+          PR_URL=$(gh pr create \
+            --repo "${{ github.repository }}" \
+            --title "fix: bump ManifoldKit pin to ${TAG}" \
+            --body "Automated: ManifoldKit ${TAG} shipped. Pin re-resolved, built, and tested green against the new core. Merging trips release-please for a patch release." \
+            --head "$BRANCH" --base main)
+          echo "Opened $PR_URL"
+          echo "pr_url=$PR_URL" >> "$GITHUB_OUTPUT"
+          # Inline gate already ran the identical suite; admin-merge past the
+          # redundant required check (assumes enforce_admins is off on main,
+          # matching core's and the companions' branch protection).
+          gh pr merge "$PR_URL" --repo "${{ github.repository }}" --squash --admin --delete-branch
+          echo "Merged $PR_URL"
+
+      - name: release-please-trigger
+        if: steps.edit.outputs.changed == 'true' && inputs.trip-release-please
+        run: |
+          echo "Bump merged via PAT-authored push (${{ steps.pr.outputs.pr_url }})."
+          echo "Downstream release-please.yml (push trigger on main) will fire automatically."

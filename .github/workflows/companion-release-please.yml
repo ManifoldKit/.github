@@ -1,0 +1,36 @@
+name: Companion release-please (reusable)
+
+# Reusable `workflow_call` wrapper of the 22-line release-please.yml that
+# manifold-llama (and companions generally) carry as a local copy. Callers
+# keep their own `on: push` / `workflow_dispatch` triggers and call this via
+# `jobs.<id>.uses` — reusable workflows replace jobs, not steps, so all the
+# logic lives here at job level.
+on:
+  workflow_call:
+    inputs:
+      config-file:
+        description: "Path to the release-please config file, relative to the caller repo root."
+        required: false
+        type: string
+        default: release-please-config.json
+      manifest-file:
+        description: "Path to the release-please manifest file, relative to the caller repo root."
+        required: false
+        type: string
+        default: .release-please-manifest.json
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: release-please
+      cancel-in-progress: true
+    steps:
+      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5
+        with:
+          config-file: ${{ inputs.config-file }}
+          manifest-file: ${{ inputs.manifest-file }}
