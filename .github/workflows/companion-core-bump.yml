@@ -144,7 +144,19 @@ jobs:
 
       - name: Run gate command
         if: steps.edit.outputs.changed == 'true'
-        run: ${{ inputs.gate-command }}
+        # Flow the input through env rather than interpolating
+        # ${{ inputs.gate-command }} directly into the run: body — same
+        # rationale as VERSION/PIN_MODE above: a literal-text substitution is
+        # a template-injection surface for reusable workflows (a value
+        # containing YAML- or script-breaking characters can splice into the
+        # surrounding step rather than just running as the intended command).
+        # Callers are trusted org repos, so this is defense-in-depth, not a
+        # response to an active threat.
+        env:
+          GATE_COMMAND: ${{ inputs.gate-command }}
+        run: |
+          set -euo pipefail
+          eval "$GATE_COMMAND"
 
       - name: Open and merge bump PR
         if: steps.edit.outputs.changed == 'true'

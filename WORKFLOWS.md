@@ -74,11 +74,26 @@ jobs:
   bump:
     needs: resolve
     uses: ManifoldKit/.github/.github/workflows/companion-core-bump.yml@main
+    permissions:
+      contents: write
+      pull-requests: write
     with:
       version: ${{ needs.resolve.outputs.version }}
       pin-mode: upToNextMinor
     secrets: inherit
 ```
+
+**Required:** the calling job must declare `permissions: contents: write,
+pull-requests: write` itself, even though the reusable workflow also declares
+them. Permissions can only be reduced, never elevated, across a `uses:` call
+chain — the reusable workflow's own `permissions:` block cannot grant more
+than the calling job has. All four companion repos default to
+`default_workflow_permissions: read`, so omitting this block here caps the
+reusable workflow's `GITHUB_TOKEN` to read-only regardless of what it
+requests. (`companion-core-bump.yml` itself does its actual git writes via
+`RELEASE_AUTOMERGE_TOKEN`, not `GITHUB_TOKEN`, so this omission wouldn't have
+broken the bump PR — but declare it anyway for defense-in-depth and to match
+the pattern that IS load-bearing below.)
 
 ### Caller shim — exact-pin repo (manifold-eval style)
 
@@ -113,6 +128,9 @@ jobs:
   bump:
     needs: resolve
     uses: ManifoldKit/.github/.github/workflows/companion-core-bump.yml@main
+    permissions:
+      contents: write
+      pull-requests: write
     with:
       version: ${{ needs.resolve.outputs.version }}
       pin-mode: exact
@@ -120,6 +138,9 @@ jobs:
     secrets:
       RELEASE_AUTOMERGE_TOKEN: ${{ secrets.RELEASE_AUTOMERGE_TOKEN }}
 ```
+
+See the permissions note under the `upToNextMinor` shim above — it applies
+here too.
 
 Both `secrets: inherit` and an explicit `secrets:` mapping work — use
 `inherit` when the caller repo's org/repo secret is already named
@@ -190,7 +211,20 @@ on:
 jobs:
   release-please:
     uses: ManifoldKit/.github/.github/workflows/companion-release-please.yml@main
+    permissions:
+      contents: write
+      pull-requests: write
 ```
+
+**Required, and load-bearing here** (unlike the core-bump note above):
+`googleapis/release-please-action`'s `token` input defaults to
+`${{ github.token }}` — the reusable workflow's own `GITHUB_TOKEN`, which is
+capped by whatever the calling job grants (permissions reduce, never elevate,
+across a `uses:` chain). All companion repos default to
+`default_workflow_permissions: read`, so without this block the action's
+token would be read-only and every release-please run would 403 trying to
+open/update the release PR. Omitting `permissions:` here silently breaks
+release automation — it doesn't fail loudly at call time.
 
 ## `actions/setup-swift-ci`
 
