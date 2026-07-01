@@ -16,6 +16,7 @@ between layers.
 | [**ManifoldKit**](https://github.com/ManifoldKit/ManifoldKit) | Core: UI, runtime, persistence, and the in-core (cloud + Foundation) backends. |
 | [**manifold-llama**](https://github.com/ManifoldKit/manifold-llama) | On-device GGUF / llama.cpp backend family. |
 | [**manifold-mlx**](https://github.com/ManifoldKit/manifold-mlx) | On-device MLX backend family (text + image generation). |
+| [**manifold-eval**](https://github.com/ManifoldKit/manifold-eval) | Independent assurance harness — reproducible, adversarial verdicts on `model × quant × backend × renderer` behavior. |
 
 ### Links
 
