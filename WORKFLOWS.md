@@ -256,6 +256,93 @@ jobs:
       - run: swift test
 ```
 
+## `swift-ci.yml`
+
+Reusable build+test workflow intended to become the single CI definition for
+the estate's Swift repos — both SwiftPM packages (manifold-llama,
+manifold-mlx, manifold-eval) and XcodeGen app repos (basechat). `mode: spm`
+runs `swift build`/`swift test` directly; `mode: xcodegen` runs `xcodegen
+generate` then `xcodebuild build`/`xcodebuild test` against the generated
+project. Draft PRs are skipped (matches manifold-eval's guard):
+`if: github.event_name != 'pull_request' || github.event.pull_request.draft
+== false`.
+
+| Input | Default | Notes |
+|---|---|---|
+| `mode` | `spm` | `spm` or `xcodegen`. |
+| `runner` | `'"macos-15"'` | JSON-encoded, consumed as `runs-on: ${{ fromJSON(inputs.runner) }}`. The default is the JSON string `"macos-15"` (note the escaped inner quotes) so `fromJSON` yields the plain string `macos-15`. Pass a JSON array the same way to target a runner group, e.g. `'["self-hosted", "macos"]'`. |
+| `xcode-version` | `26.3` | Passed through to `setup-swift-ci`. |
+| `cache-key-suffix` | `""` | Passed through to `setup-swift-ci`. |
+| `build-command` | `swift build --build-tests` | spm mode only. |
+| `test-command` | `swift test` | spm mode only. |
+| `project` | — (required in xcodegen mode) | xcodegen mode only, e.g. `BaseChat.xcodeproj`. |
+| `scheme` | — (required in xcodegen mode) | xcodegen mode only. |
+| `destination` | `platform=iOS Simulator,name=iPhone 16` | xcodegen mode only. |
+| `run-tests` | `true` | xcodegen mode only: `xcodebuild test` when true, `xcodebuild build` when false. |
+| `extra-xcodebuild-flags` | `-skipPackagePluginValidation -skipMacroValidation CODE_SIGNING_ALLOWED=NO` | xcodegen mode only. |
+| `timeout-minutes` | `45` | Job-level timeout. |
+
+`permissions: contents: read` suffices — no secrets are needed in either mode.
+
+### Caller shim — SwiftPM companion (manifold-llama style)
+
+```yaml
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - CHANGELOG.md
+      - .release-please-manifest.json
+  pull_request:
+    paths-ignore:
+      - CHANGELOG.md
+      - .release-please-manifest.json
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    uses: ManifoldKit/.github/.github/workflows/swift-ci.yml@main
+```
+
+### Caller shim — XcodeGen app repo (basechat style)
+
+```yaml
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    uses: ManifoldKit/.github/.github/workflows/swift-ci.yml@main
+    with:
+      mode: xcodegen
+      project: BaseChat.xcodeproj
+      scheme: BaseChat
+```
+
+**Concurrency must live in the caller, not the reusable workflow.** A
+`concurrency:` block declared inside `swift-ci.yml` itself would be keyed on
+the *reusable* workflow's own name/ref for every caller, silently
+cross-cancelling unrelated callers' runs against each other. Each caller
+shim above declares its own `group: ${{ github.workflow }}-${{ github.ref }}`
+so cancellation only ever applies within that repo's own workflow runs.
+
+No secrets required in either shim — `permissions: contents: read` (the
+reusable workflow's default) is sufficient for both `spm` and `xcodegen`
+mode.
+
 ## Regex dry-run proof (pin-rewrite, both modes)
 
 Both `pin-mode` regexes in `companion-core-bump.yml` were dry-run against
