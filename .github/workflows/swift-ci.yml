@@ -1,0 +1,176 @@
+name: Swift CI (reusable)
+
+# Reusable `workflow_call` build+test workflow intended to become the single
+# CI definition for the estate's Swift repos — both SwiftPM packages
+# (manifold-llama, manifold-mlx, manifold-eval) and XcodeGen app repos
+# (basechat). Callers keep their own `push`/`pull_request` triggers (plus a
+# caller-side `concurrency` block — see WORKFLOWS.md) and invoke this via
+# `jobs.<id>.uses`.
+#
+# `mode: spm` runs `swift build`/`swift test` directly against the checked
+# out package. `mode: xcodegen` runs `xcodegen generate` then
+# `xcodebuild build`/`xcodebuild test` against the generated .xcodeproj.
+on:
+  workflow_call:
+    inputs:
+      mode:
+        description: >
+          "spm" for a SwiftPM package (swift build / swift test). "xcodegen"
+          for an XcodeGen app repo (xcodegen generate, then xcodebuild).
+        required: false
+        type: string
+        default: spm
+      runner:
+        description: >
+          JSON-encoded runs-on value, consumed via fromJSON() into runs-on
+          below. Must be valid JSON, so a single label needs its own quotes
+          escaped into the string, e.g. '"macos-15"'. A runner group/label
+          array is passed the same way, e.g. '["self-hosted", "macos"]'.
+        required: false
+        type: string
+        default: '"macos-15"'
+      xcode-version:
+        description: "Xcode version, passed through to actions/setup-swift-ci."
+        required: false
+        type: string
+        default: "26.3"
+      cache-key-suffix:
+        description: "Passed through to actions/setup-swift-ci."
+        required: false
+        type: string
+        default: ""
+      build-command:
+        description: "spm mode only: shell command that builds the package."
+        required: false
+        type: string
+        default: "swift build --build-tests"
+      test-command:
+        description: "spm mode only: shell command that runs the package's tests."
+        required: false
+        type: string
+        default: "swift test"
+      project:
+        description: "xcodegen mode only: the generated .xcodeproj name, e.g. BaseChat.xcodeproj."
+        required: false
+        type: string
+      scheme:
+        description: "xcodegen mode only: the xcodebuild scheme to build/test."
+        required: false
+        type: string
+      destination:
+        description: "xcodegen mode only: the xcodebuild -destination value."
+        required: false
+        type: string
+        default: "platform=iOS Simulator,name=iPhone 16"
+      run-tests:
+        description: >
+          xcodegen mode only: run `xcodebuild test` when true, `xcodebuild
+          build` when false.
+        required: false
+        type: boolean
+        default: true
+      extra-xcodebuild-flags:
+        description: "xcodegen mode only: extra flags appended to the xcodebuild invocation."
+        required: false
+        type: string
+        default: "-skipPackagePluginValidation -skipMacroValidation CODE_SIGNING_ALLOWED=NO"
+      timeout-minutes:
+        description: "Job timeout in minutes."
+        required: false
+        type: number
+        default: 45
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    # Matches manifold-eval's draft-guard pattern: skip draft PRs, but still
+    # run on every other trigger (push, ready-for-review, workflow_dispatch,
+    # ...) where there is no pull_request context at all.
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ${{ fromJSON(inputs.runner) }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+
+      - name: Setup Swift CI (spm)
+        # spm mode only: the composite's SwiftPM cache keys on
+        # hashFiles('Package.resolved'), which an XcodeGen app repo doesn't
+        # have — in xcodegen mode the cache would always miss (empty hash)
+        # and never cover xcodebuild's DerivedData anyway, so it's pure
+        # overhead there.
+        if: inputs.mode == 'spm'
+        uses: ManifoldKit/.github/.github/actions/setup-swift-ci@main
+        with:
+          xcode-version: ${{ inputs.xcode-version }}
+          cache-key-suffix: ${{ inputs.cache-key-suffix }}
+          verify-toolchain: "true"
+
+      - name: Select Xcode (xcodegen)
+        # xcodegen mode gets only the toolchain selection, not the composite
+        # (see the spm step's comment). Same SHA pin as setup-swift-ci.
+        if: inputs.mode == 'xcodegen'
+        uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1
+        with:
+          xcode-version: ${{ inputs.xcode-version }}
+
+      - name: Build (spm)
+        if: inputs.mode == 'spm'
+        env:
+          BUILD_COMMAND: ${{ inputs.build-command }}
+        run: |
+          set -euo pipefail
+          eval "$BUILD_COMMAND"
+
+      - name: Test (spm)
+        if: inputs.mode == 'spm'
+        env:
+          TEST_COMMAND: ${{ inputs.test-command }}
+        run: |
+          set -euo pipefail
+          eval "$TEST_COMMAND"
+
+      - name: Install xcodegen
+        if: inputs.mode == 'xcodegen'
+        run: |
+          set -euo pipefail
+          command -v xcodegen || brew install xcodegen
+
+      - name: Generate Xcode project
+        if: inputs.mode == 'xcodegen'
+        run: |
+          set -euo pipefail
+          xcodegen generate
+
+      - name: Build (xcodegen)
+        if: inputs.mode == 'xcodegen' && inputs.run-tests == false
+        env:
+          PROJECT: ${{ inputs.project }}
+          SCHEME: ${{ inputs.scheme }}
+          DESTINATION: ${{ inputs.destination }}
+          EXTRA_FLAGS: ${{ inputs.extra-xcodebuild-flags }}
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2086 # EXTRA_FLAGS is intentionally word-split into multiple xcodebuild args
+          xcodebuild build \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -destination "$DESTINATION" \
+            $EXTRA_FLAGS
+
+      - name: Test (xcodegen)
+        if: inputs.mode == 'xcodegen' && inputs.run-tests == true
+        env:
+          PROJECT: ${{ inputs.project }}
+          SCHEME: ${{ inputs.scheme }}
+          DESTINATION: ${{ inputs.destination }}
+          EXTRA_FLAGS: ${{ inputs.extra-xcodebuild-flags }}
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2086 # EXTRA_FLAGS is intentionally word-split into multiple xcodebuild args
+          xcodebuild test \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -destination "$DESTINATION" \
+            $EXTRA_FLAGS
