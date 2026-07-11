@@ -94,11 +94,26 @@ jobs:
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
-      - uses: ManifoldKit/.github/.github/actions/setup-swift-ci@main
+      - name: Setup Swift CI (spm)
+        # spm mode only: the composite's SwiftPM cache keys on
+        # hashFiles('Package.resolved'), which an XcodeGen app repo doesn't
+        # have — in xcodegen mode the cache would always miss (empty hash)
+        # and never cover xcodebuild's DerivedData anyway, so it's pure
+        # overhead there.
+        if: inputs.mode == 'spm'
+        uses: ManifoldKit/.github/.github/actions/setup-swift-ci@main
         with:
           xcode-version: ${{ inputs.xcode-version }}
           cache-key-suffix: ${{ inputs.cache-key-suffix }}
-          verify-toolchain: ${{ inputs.mode == 'spm' && 'true' || 'false' }}
+          verify-toolchain: "true"
+
+      - name: Select Xcode (xcodegen)
+        # xcodegen mode gets only the toolchain selection, not the composite
+        # (see the spm step's comment). Same SHA pin as setup-swift-ci.
+        if: inputs.mode == 'xcodegen'
+        uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1
+        with:
+          xcode-version: ${{ inputs.xcode-version }}
 
       - name: Build (spm)
         if: inputs.mode == 'spm'

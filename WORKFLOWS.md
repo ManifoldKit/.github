@@ -271,8 +271,8 @@ project. Draft PRs are skipped (matches manifold-eval's guard):
 |---|---|---|
 | `mode` | `spm` | `spm` or `xcodegen`. |
 | `runner` | `'"macos-15"'` | JSON-encoded, consumed as `runs-on: ${{ fromJSON(inputs.runner) }}`. The default is the JSON string `"macos-15"` (note the escaped inner quotes) so `fromJSON` yields the plain string `macos-15`. Pass a JSON array the same way to target a runner group, e.g. `'["self-hosted", "macos"]'`. |
-| `xcode-version` | `26.3` | Passed through to `setup-swift-ci`. |
-| `cache-key-suffix` | `""` | Passed through to `setup-swift-ci`. |
+| `xcode-version` | `26.3` | Passed to `setup-swift-ci` (spm mode) or directly to `maxim-lobanov/setup-xcode` (xcodegen mode). |
+| `cache-key-suffix` | `""` | spm mode only: passed through to `setup-swift-ci`. Ignored in xcodegen mode, which skips the composite — its SwiftPM cache keys on `Package.resolved` (absent in an XcodeGen repo, so it would always miss) and never covers xcodebuild's DerivedData. |
 | `build-command` | `swift build --build-tests` | spm mode only. |
 | `test-command` | `swift test` | spm mode only. |
 | `project` | — (required in xcodegen mode) | xcodegen mode only, e.g. `BaseChat.xcodeproj`. |
@@ -283,6 +283,10 @@ project. Draft PRs are skipped (matches manifold-eval's guard):
 | `timeout-minutes` | `45` | Job-level timeout. |
 
 `permissions: contents: read` suffices — no secrets are needed in either mode.
+
+xcodegen mode installs xcodegen with `command -v xcodegen || brew install
+xcodegen` — a no-op on GitHub-hosted `macos-15` (xcodegen is preinstalled),
+but the fallback assumes Homebrew is on `PATH` on self-hosted runners.
 
 ### Caller shim — SwiftPM companion (manifold-llama style)
 
@@ -296,6 +300,7 @@ on:
       - CHANGELOG.md
       - .release-please-manifest.json
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     paths-ignore:
       - CHANGELOG.md
       - .release-please-manifest.json
@@ -318,6 +323,7 @@ on:
   push:
     branches: [main]
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -331,6 +337,17 @@ jobs:
       project: BaseChat.xcodeproj
       scheme: BaseChat
 ```
+
+**Required, and load-bearing:** the `types:` list on `pull_request` must
+include `ready_for_review`. The reusable workflow's job skips draft PRs
+(`if: github.event_name != 'pull_request' ||
+github.event.pull_request.draft == false`), and a skipped job *counts as
+passing* for branch protection. With the bare `pull_request:` default types
+(`opened, synchronize, reopened` — `ready_for_review` is NOT among them), a
+PR opened as draft gets its CI job skipped, and marking it ready fires no
+event the caller subscribes to — so the PR becomes mergeable with CI never
+having actually run. Omitting the `types:` list here silently disarms the
+draft guard; it doesn't fail loudly at call time.
 
 **Concurrency must live in the caller, not the reusable workflow.** A
 `concurrency:` block declared inside `swift-ci.yml` itself would be keyed on
