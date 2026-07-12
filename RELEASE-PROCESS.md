@@ -34,9 +34,10 @@ a human still needs to do in the right order.
    trips the companion's own push-triggered `release-please.yml`.
 4. The companion's release-please then opens its own release PR off that
    pin-bump commit (plus anything else that landed since its last release).
-   `manifold-eval` pins with `exact:` rather than `.upToNextMinor(from:)` and
-   currently has no release-please of its own, so step 4 doesn't apply there
-   yet — the pin-bump PR from step 3 is the end state for that repo.
+   `manifold-eval` pins with `exact:` rather than `.upToNextMinor(from:)`;
+   its release-please adoption landed via
+   [manifold-eval#40](https://github.com/ManifoldKit/manifold-eval/pull/40),
+   so step 4 applies to all three companions.
 
 All of the reusable workflows behind this (`companion-core-bump.yml`,
 `companion-release-please.yml`, `companion-canary.yml`, `swift-ci.yml`) live
