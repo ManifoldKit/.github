@@ -1,5 +1,9 @@
 # Reusable companion workflows
 
+For the human sequencing around a release (merge order across core and the
+companions, when to run `companion-compat.yml`, changelog rewrite steps),
+see [RELEASE-PROCESS.md](RELEASE-PROCESS.md).
+
 This repo (`ManifoldKit/.github`) hosts reusable `workflow_call` workflows and a
 shared composite action for the ManifoldKit companion repos
 (`manifold-llama`, `manifold-mlx`, `manifold-eval`, and any future backend
