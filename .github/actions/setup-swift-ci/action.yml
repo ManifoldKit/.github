@@ -21,6 +21,15 @@ inputs:
       Set to 'true' to run the swift-tools-version vs. runner Swift version
       check. Only needed by jobs that build Package.swift directly.
     default: "false"
+  skip-xcode-select:
+    description: >
+      Set to 'true' to skip Xcode version selection entirely. Self-hosted
+      runners manage their own toolchain (already selected before the job
+      starts) and typically carry a single Xcode whose version string won't
+      literally match a pinned value like "26.3", which makes
+      maxim-lobanov/setup-xcode hard-fail. Leave 'false' (default) for
+      GitHub-hosted runners, which need the explicit selection.
+    default: "false"
 
 runs:
   using: "composite"
@@ -28,6 +37,7 @@ runs:
     - name: Select Xcode
       # SHA-pinned for reproducible toolchain selection without the
       # version-discovery API call that `latest-stable` requires.
+      if: inputs.skip-xcode-select != 'true'
       uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1
       with:
         xcode-version: ${{ inputs.xcode-version }}

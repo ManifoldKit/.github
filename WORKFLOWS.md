@@ -244,6 +244,7 @@ objects go stale on cache restore).
 | `xcode-version` | `26.3` | Passed to `maxim-lobanov/setup-xcode`. |
 | `cache-key-suffix` | `""` | Append to disambiguate a job's cache key, e.g. `-foundation-only`. |
 | `verify-toolchain` | `false` | Set `true` in jobs that build `Package.swift` directly, to fail fast with a clear message on a tools-version/runner-Swift mismatch. |
+| `skip-xcode-select` | `false` | Set `true` on self-hosted runners: skips the `maxim-lobanov/setup-xcode` step entirely. Self-hosted runners manage their own toolchain and typically carry a single Xcode whose version string won't literally match a pinned value like `26.3`, which makes `setup-xcode` hard-fail on Select-Xcode. Everything else the composite does (SwiftPM cache restore, toolchain verification) still runs. Omitting this input (the default) is behavior-identical to before this input existed. |
 
 ### Usage
 
@@ -276,6 +277,7 @@ project. Draft PRs are skipped (matches manifold-eval's guard):
 | `mode` | `spm` | `spm` or `xcodegen`. |
 | `runner` | `'"macos-15"'` | JSON-encoded, consumed as `runs-on: ${{ fromJSON(inputs.runner) }}`. The default is the JSON string `"macos-15"` (note the escaped inner quotes) so `fromJSON` yields the plain string `macos-15`. Pass a JSON array the same way to target a runner group, e.g. `'["self-hosted", "macos"]'`. |
 | `xcode-version` | `26.3` | Passed to `setup-swift-ci` (spm mode) or directly to `maxim-lobanov/setup-xcode` (xcodegen mode). |
+| `skip-xcode-select` | `false` | Set `true` for self-hosted-runner callers: skips Xcode version selection entirely, in both `spm` mode (plumbed into `setup-swift-ci`'s own `skip-xcode-select` input) and `xcodegen` mode (skips the direct `maxim-lobanov/setup-xcode` step). Self-hosted runners already have their toolchain configured, and a pinned version string like `26.3` often won't literally match what's installed, which makes `setup-xcode` hard-fail. Use this instead of hand-managing `xcode-select` in the caller. **Omitting this input is a no-op** — default `false` reproduces exactly the prior behavior (Select Xcode always runs). An alternative considered: globbing the newest installed Xcode and running `xcode-select` against it (the pattern `ManifoldKit/ManifoldKit`'s `companion-compat.yml` already uses for its self-hosted job) — deferred in favor of the simpler skip, since self-hosted runners in this estate pre-select their toolchain outside CI. |
 | `cache-key-suffix` | `""` | spm mode only: passed through to `setup-swift-ci`. Ignored in xcodegen mode, which skips the composite — its SwiftPM cache keys on `Package.resolved` (absent in an XcodeGen repo, so it would always miss) and never covers xcodebuild's DerivedData. |
 | `build-command` | `swift build --build-tests` | spm mode only. |
 | `test-command` | `swift test` | spm mode only. |
