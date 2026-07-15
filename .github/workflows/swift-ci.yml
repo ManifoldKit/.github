@@ -34,6 +34,15 @@ on:
         required: false
         type: string
         default: "26.3"
+      skip-xcode-select:
+        description: >
+          Self-hosted runners manage their own toolchain; set true to skip
+          Xcode version selection entirely (both spm and xcodegen modes).
+          Omitting this preserves current behavior exactly — GitHub-hosted
+          runners still get the explicit `xcode-version` selection.
+        required: false
+        type: boolean
+        default: false
       cache-key-suffix:
         description: "Passed through to actions/setup-swift-ci."
         required: false
@@ -106,11 +115,13 @@ jobs:
           xcode-version: ${{ inputs.xcode-version }}
           cache-key-suffix: ${{ inputs.cache-key-suffix }}
           verify-toolchain: "true"
+          skip-xcode-select: ${{ inputs.skip-xcode-select }}
 
       - name: Select Xcode (xcodegen)
         # xcodegen mode gets only the toolchain selection, not the composite
-        # (see the spm step's comment). Same SHA pin as setup-swift-ci.
-        if: inputs.mode == 'xcodegen'
+        # (see the spm step's comment). Same SHA pin as setup-swift-ci. Skipped
+        # entirely on self-hosted runners via skip-xcode-select (see input doc).
+        if: inputs.mode == 'xcodegen' && inputs.skip-xcode-select != true
         uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1
         with:
           xcode-version: ${{ inputs.xcode-version }}
