@@ -110,12 +110,23 @@ jobs:
     # (and happened to be green).
     #
     # Fix: the job always runs, and on a draft it FAILS FAST before any
-    # expensive step. Draft PRs are unmergeable anyway, so a red check costs
-    # nothing and burns no build minutes — the zero-CI draft staging area is
-    # preserved. Crucially the check can now only be GREEN if a real build
-    # actually ran, so no branch-protection change is needed: the existing
-    # required context (`test / build-and-test`) becomes meaningful as-is.
-    runs-on: ${{ fromJSON(inputs.runner) }}
+    # expensive step, so the check can only be GREEN if a real build ran. No
+    # branch-protection change is needed — the job (and therefore the context
+    # name, `<caller job id> / build-and-test`) is unchanged, so the existing
+    # required context becomes meaningful as-is. Verified against live branch
+    # protection: manifold-mlx and manifold-llama both require
+    # `test / build-and-test`, and both name their calling job `test`.
+    #
+    # COST: a draft still costs ONE runner allocation — the job is scheduled,
+    # not skipped, so a runner is queued and booted before step 1 exits. It no
+    # longer burns *build* minutes, but on `macos-15` (billed 10x, and capped
+    # org-wide at ~5 concurrent) that boot would take a slot other queued jobs
+    # wait behind — and this estate opens a draft PR the moment code compiles,
+    # so that is every draft push across four repos. Drafts are therefore
+    # routed to `ubuntu-latest`, which only ever runs `exit 1`. The context
+    # name is unaffected by the runner, so this is invisible to branch
+    # protection.
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.draft) && 'ubuntu-latest' || fromJSON(inputs.runner) }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     steps:
       - name: Draft PR — not verified
@@ -123,6 +134,28 @@ jobs:
         run: |
           echo "::notice title=Draft not verified::This PR is a draft, so the build/test gate did not run. Mark it ready for review to verify it — this red check is expected and blocks an accidental merge on an unverified result."
           exit 1
+
+      # `mode` is a free-form string input, and EVERY build/test step below is
+      # gated on `inputs.mode == 'spm'` or `== 'xcodegen'`. An unrecognized
+      # value (`SPM`, a typo, an empty template expansion, or a third mode
+      # added later without wiring) would skip all of them and let the job exit
+      # SUCCESS having built nothing — reintroducing, via one character, the
+      # exact green-without-a-build hole this workflow now exists to prevent.
+      # Fail closed on anything unrecognized.
+      # No `if:` needed — on a draft the step above already failed, and GitHub
+      # skips the rest of the job by default.
+      - name: Validate mode
+        env:
+          MODE: ${{ inputs.mode }}
+        run: |
+          set -euo pipefail
+          case "$MODE" in
+            spm|xcodegen) echo "mode=$MODE" ;;
+            *)
+              echo "::error title=Unknown mode::inputs.mode='$MODE' is not one of: spm, xcodegen. Every build/test step is gated on those values, so an unrecognized mode would report a green check having built nothing." >&2
+              exit 1
+              ;;
+          esac
 
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 

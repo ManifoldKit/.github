@@ -268,13 +268,14 @@ the estate's Swift repos — both SwiftPM packages (manifold-llama,
 manifold-mlx, manifold-eval) and XcodeGen app repos (basechat). `mode: spm`
 runs `swift build`/`swift test` directly; `mode: xcodegen` runs `xcodegen
 generate` then `xcodebuild build`/`xcodebuild test` against the generated
-Draft PRs do **not** run the build: the job's first step fails fast on
+project. Draft PRs do **not** run the build: the job's first step fails fast on
 `github.event.pull_request.draft == true`, before any expensive step. The job
 is deliberately *not* skipped at job level any more — a skipped required check
 counts as passing, so a draft could satisfy branch protection without ever
-building. A draft is unmergeable regardless, so a red check there costs nothing
-and burns no build minutes, while guaranteeing the check can only be green if a
-real build ran. See "Draft PRs fail rather than skip" below.
+building. A draft is unmergeable regardless, so a red check there is harmless,
+and drafts are routed to `ubuntu-latest` so they cost one cheap runner
+allocation rather than a scarce macOS slot. See "Draft PRs fail rather than
+skip" below.
 
 | Input | Default | Notes |
 |---|---|---|
@@ -363,15 +364,43 @@ skipped-therefore-passing check and merged a breaking change the gate had never
 built. Only the post-merge run on `main` caught up (and happened to be green).
 
 Now the job always runs and its first step exits 1 on a draft, before any
-expensive step. A draft cannot be merged anyway, so the red check costs nothing
-and no build minutes are spent — and the check can only be green if a real build
-ran. No branch-protection change was needed; the existing required context
-became meaningful as-is.
+expensive step, so the check can only be green if a real build ran.
+
+**Cost, stated precisely:** a draft is no longer free. The job is *scheduled*
+rather than skipped, so one runner is queued and booted before step 1 exits —
+no *build* minutes, but a runner allocation. On `macos-15` (billed 10x, ~5
+concurrent org-wide) that would take a slot from other queued jobs on every
+draft push, across four repos, in an estate whose documented practice is to
+open a draft PR the moment code compiles. Drafts are therefore routed to
+`ubuntu-latest` via the `runs-on` expression; the runner does not affect the
+check's context name, so this is invisible to branch protection.
+
+**Unknown `mode` fails closed.** Every build/test step is gated on
+`inputs.mode == 'spm'` or `== 'xcodegen'`, so an unrecognized value would skip
+all of them and exit success having built nothing — the same
+green-without-a-build hole, reachable by a typo. A `Validate mode` step now
+rejects anything else.
+
+**Required context name.** It is `<caller job id> / build-and-test`, so it
+depends on what the caller names its job — the example shims below use `ci`
+(→ `ci / build-and-test`), while manifold-mlx and manifold-llama both name it
+`test` and both require `test / build-and-test` (verified against live branch
+protection). Read your own caller before configuring branch protection. No
+branch-protection change was needed for this fix: the job, and therefore the
+context name, is unchanged.
 
 **Still recommended:** keep `ready_for_review` in the caller's `pull_request`
 `types:` list. It is no longer load-bearing for *safety* (a stale draft result
 is now red, not green), but without it, marking a PR ready fires no event and
 the PR simply stays red until the next push — correct, but confusing.
+
+The same applies to `paths-ignore`: path filters apply to **all** `pull_request`
+activity types, `ready_for_review` included, so a ready-flip whose diff touches
+only ignored paths fires nothing and the draft-era red persists until a
+qualifying push. That direction is fail-safe — before this fix the sticky state
+was green (unsafe but self-clearing); now it is red (safe but sticky) — so it is
+friction, not a hole. Push any qualifying change, or re-run the workflow, to
+clear it.
 
 **Concurrency must live in the caller, not the reusable workflow.** A
 `concurrency:` block declared inside `swift-ci.yml` itself would be keyed on
