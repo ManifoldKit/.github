@@ -54,59 +54,28 @@ jobs:
           echo "${ACTIONLINT_SHA256}  ${tarball}" | sha256sum --check --strict -
           tar -xzf "$tarball" actionlint
           ./actionlint --version
+          # actionlint auto-detects shellcheck to lint `run:` blocks, and if it
+          # is ABSENT it disables that rule and still exits 0 — half the
+          # advertised coverage would vanish with no signal. Assert it exists so
+          # a change to the runner image fails loudly instead.
+          shellcheck --version
 
       # actionlint checks workflow schema, `uses:` shapes, context availability
-      # per key, and the expression grammar inside `${{ }}`. shellcheck is
-      # preinstalled on ubuntu runners, and actionlint auto-detects it to lint
-      # every `run:` block, so shell bugs in the reusable workflows are caught
-      # here too.
+      # per key, and the expression grammar inside `${{ }}`. With shellcheck
+      # present (asserted above) it also lints every `run:` block, so shell bugs
+      # in the reusable workflows are caught here too.
       - name: actionlint (workflows, expressions, run-block shell)
         run: ./actionlint -color
 
-      # actionlint globs `.github/workflows/` only, so the composite action is
-      # invisible to it despite being shared infrastructure every caller
-      # executes. Parse it and shellcheck its bash steps explicitly.
+      # actionlint globs `.github/workflows/` only, so composite actions are
+      # invisible to it despite being shared infrastructure every caller runs.
+      # See the script for exactly what it does and does not cover.
       - name: Lint composite actions
         run: |
           set -euo pipefail
-          shopt -s nullglob
-          found=0
-          for action in .github/actions/*/action.yml .github/actions/*/action.yaml; do
-            found=1
-            echo "==> $action"
-            python3 - "$action" <<'PY'
-          import sys, pathlib, yaml
-          path = pathlib.Path(sys.argv[1])
-          doc = yaml.safe_load(path.read_text())
-          if not isinstance(doc, dict) or "runs" not in doc:
-              sys.exit(f"{path}: not a valid action definition (no `runs:` key)")
-          steps = (doc.get("runs") or {}).get("steps") or []
-          out = pathlib.Path("_action_shell")
-          out.mkdir(exist_ok=True)
-          count = 0
-          for i, step in enumerate(steps):
-              script = step.get("run")
-              if not script:
-                  continue
-              shell = step.get("shell", "")
-              if shell not in ("bash", "sh"):
-                  # A non-shell step (node, pwsh, composite `uses:`) is not ours
-                  # to shellcheck; skip rather than mis-lint it.
-                  continue
-              target = out / f"{path.parent.name}_{i}.sh"
-              target.write_text("#!/usr/bin/env bash\n" + script)
-              count += 1
-          print(f"    extracted {count} shell step(s)")
-          PY
-          done
-          if [ "$found" -eq 0 ]; then
-            echo "No composite actions found — nothing to lint."
-            exit 0
-          fi
-          if [ -d _action_shell ] && [ -n "$(ls -A _action_shell)" ]; then
-            # `-e` on the extracted fragments: a composite step is a fragment,
-            # not a whole program, so unassigned-variable and sourcing warnings
-            # would be noise. Real bugs (quoting, test syntax) still fail.
-            shellcheck --shell=bash --exclude=SC2148,SC2034,SC1091 _action_shell/*.sh
-            echo "shellcheck clean across extracted composite steps."
-          fi
+          # Don't assume the runner image ships PyYAML. If it stops doing so,
+          # the linter would crash with ModuleNotFoundError and this job would
+          # go red for a reason that has nothing to do with the change under
+          # test — so check, and install only if needed.
+          python3 -c 'import yaml' 2>/dev/null || pip3 install --quiet --disable-pip-version-check pyyaml
+          python3 .github/scripts/lint-composite-actions.py .
