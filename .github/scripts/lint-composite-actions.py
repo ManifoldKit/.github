@@ -39,7 +39,12 @@ from pathlib import Path
 import yaml
 
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+DOCKER_DIGEST_RE = re.compile(r"@sha256:[0-9a-f]{64}$")
 SHELLCHECKABLE = {"bash", "sh"}
+# `using` is a required property of every action. Unknown values are rejected
+# rather than waved through: a typo'd runtime fails at job start in every
+# caller, which is the failure class this linter exists to move earlier.
+KNOWN_USING = {"composite", "docker", "node12", "node16", "node20", "node24"}
 # SC1091: "not following sourced file" — the sourced path doesn't exist in the
 # extracted fragment's directory. That is genuinely not checkable here.
 # Deliberately NOT excluded: SC2034 (unused variable). A composite run step is
@@ -67,17 +72,36 @@ def lint_action(path: Path, workdir: Path) -> tuple[int, list[tuple[Path, str]]]
         fail(f"{path}: not a valid action definition (no `runs:` key)")
         return 1, scripts
 
-    runs = doc.get("runs") or {}
+    runs = doc.get("runs")
+    if not isinstance(runs, dict):
+        fail(f"{path}: `runs:` must be a mapping (got {type(runs).__name__})")
+        return 1, scripts
+
     using = runs.get("using")
     steps = runs.get("steps")
+
+    # `using` is REQUIRED. An earlier version let a missing one fall through the
+    # no-steps path and report OK — the same "missing required key is not the
+    # same as nothing to do" bug that this linter fixes at the step level, one
+    # level up. Omitting it is a hard job-start failure in every caller.
+    if using is None:
+        fail(f"{path}: `runs.using:` is missing — it is required on every action")
+        return 1, scripts
+    if using not in KNOWN_USING:
+        fail(f"{path}: `runs.using: {using!r}` is not a known runtime "
+             f"({', '.join(sorted(KNOWN_USING))})")
+        return 1, scripts
 
     if using == "composite" and not steps:
         fail(f"{path}: `using: composite` but no `steps:`")
         return 1, scripts
     if not steps:
-        # A javascript/docker action has no steps to lint. Not an error.
+        # A javascript/docker action legitimately has no steps to lint.
         print(f"    using: {using!r} — no composite steps to lint")
         return 0, scripts
+    if not isinstance(steps, list):
+        fail(f"{path}: `runs.steps:` must be a list (got {type(steps).__name__})")
+        return 1, scripts
 
     for i, step in enumerate(steps):
         if not isinstance(step, dict):
@@ -88,19 +112,38 @@ def lint_action(path: Path, workdir: Path) -> tuple[int, list[tuple[Path, str]]]
         name = step.get("name", f"step {i}")
 
         uses = step.get("uses")
-        if uses:
-            ref = uses.split("@", 1)[1] if "@" in uses else ""
-            local_or_docker = uses.startswith("./") or uses.startswith("docker://")
-            if not local_or_docker and not SHA_RE.match(ref):
-                fail(
-                    f"{path}: step {i} ({name!r}) uses {uses!r} — pin to a 40-hex "
-                    f"commit SHA (with a `# vN` comment), not a tag or branch"
-                )
+        if uses is not None:
+            if not isinstance(uses, str):
+                fail(f"{path}: step {i} ({name!r}) `uses:` must be a string "
+                     f"(got {type(uses).__name__})")
                 errors += 1
+            elif uses.startswith("./"):
+                # A local ref carries no external supply chain. (Note it is also
+                # never recursively linted — only .github/actions/*/action.yml
+                # is globbed.)
+                pass
+            elif uses.startswith("docker://"):
+                # A mutable Docker tag is exactly the mutable reference SHA
+                # pinning exists to eliminate; exempting it would undercut the
+                # rule enforced two lines down.
+                if not DOCKER_DIGEST_RE.search(uses):
+                    fail(f"{path}: step {i} ({name!r}) uses {uses!r} — pin the image "
+                         f"by digest, e.g. docker://image@sha256:<64-hex>")
+                    errors += 1
+            else:
+                ref = uses.split("@", 1)[1] if "@" in uses else ""
+                if not SHA_RE.match(ref):
+                    fail(f"{path}: step {i} ({name!r}) uses {uses!r} — pin to a "
+                         f"40-hex commit SHA, not a tag or branch")
+                    errors += 1
 
-        script = step.get("run")
-        if script is None:
+        # Trigger on the KEY, not on a non-None value: `run:` with an empty body
+        # (an indentation typo that orphans the script) is still a run step to
+        # GitHub, so `shell:` is still required. Testing `script is None` here
+        # short-circuited past that check.
+        if "run" not in step:
             continue
+        script = step.get("run")
 
         shell = step.get("shell")
         if shell is None:
@@ -118,8 +161,12 @@ def lint_action(path: Path, workdir: Path) -> tuple[int, list[tuple[Path, str]]]
             print(f"    step {i} ({name!r}): shell {shell!r} — not shellcheckable, skipped")
             continue
 
+        # `run:` with no body reaches here as None once the `shell:` check above
+        # has passed; render it as empty rather than the literal string "None",
+        # which shellcheck would report as an unknown command.
+        body = "" if script is None else str(script)
         target = workdir / f"{path.parent.name}__{i}.{shell}"
-        target.write_text(f"#!/usr/bin/env {shell}\n{script}")
+        target.write_text(f"#!/usr/bin/env {shell}\n{body}")
         scripts.append((target, shell))
 
     return errors, scripts

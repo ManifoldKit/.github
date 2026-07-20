@@ -21,30 +21,44 @@ to it.
 
 **Coverage is not symmetric, and the asymmetry matters.** Workflows get full
 expression checking; composite actions get **structural and shell checks only**:
-every `run:` step must declare `shell:` (a missing one is a hard job-start
-failure in every caller), every `uses:` must be pinned to a 40-hex SHA, and each
-run step is shellchecked under the shell it actually declares. Expressions
-inside a composite's `if:` / `${{ }}` are **not** validated — actionlint owns
-that grammar and does not read action files, and reimplementing its parser here
-would be worse than the gap. Treat a change to a composite's expressions as
-unlinted, and test it on a caller.
+`runs.using:` must be present and a known runtime, every `run:` step must
+declare `shell:` (a missing one is a hard job-start failure in every caller),
+every `uses:` must be pinned — a 40-hex commit SHA for actions, an
+`@sha256:` digest for `docker://`, with local `./` refs exempt — and each run
+step is shellchecked under the shell it actually declares. Expressions inside a
+composite's `if:` / `${{ }}` are **not** validated: actionlint owns that grammar
+and does not read action files, and reimplementing its parser here would be
+worse than the gap. Treat a change to a composite's expressions as unlinted, and
+test it on a caller.
+
+The linter carries its own tripwires (`.github/scripts/test_lint_composite_actions.py`)
+— every check has a fixture that must fail plus happy paths that must pass, and
+CI runs them before the linter itself. This is not ceremony: both bugs found
+reviewing the PR that introduced this CI were cases where the linter exited 0
+and printed a success line.
 
 Run the same gate locally before pushing:
 
 ```sh
-brew install actionlint shellcheck   # once
-actionlint                           # from the repo root
+brew install actionlint shellcheck                          # once
+actionlint                                                  # workflows
+python3 .github/scripts/test_lint_composite_actions.py      # linter tripwires
+python3 .github/scripts/lint-composite-actions.py .         # composite actions
 ```
+
+All three are what CI runs. The composite linter needs PyYAML (`pip3 install
+pyyaml` locally; the runner image already ships it) and shellcheck on `PATH` —
+it refuses to run without shellcheck rather than silently checking less.
 
 Two deliberate choices. **`actionlint` is pinned to a version with a checksum**
 rather than installed from a third-party action or an unpinned `curl | bash`:
 this repo is the supply chain for four other repos' CI, so what it executes
 should be auditable and reproducible — bump `ACTIONLINT_VERSION` and
 `ACTIONLINT_SHA256` together. **Draft PRs are not skipped**, unlike
-`swift-ci.yml`: a skipped required check counts as passing (see the
-"Draft PRs fail rather than skip" callout under [`swift-ci.yml`](#swift-ciyml)),
-and re-creating that hole here to save seconds of ubuntu time would be
-self-defeating. The job is cheap; it always runs.
+`swift-ci.yml`: a skipped required check counts as *passing* for branch
+protection, so skipping here to save seconds of ubuntu time would hand back the
+same hole — see the draft-PR discussion under [`swift-ci.yml`](#swift-ciyml).
+The job is cheap; it always runs.
 
 Why expression checking specifically earns its keep: YAML validity and GitHub
 expression validity are different questions, and only the second is evaluated

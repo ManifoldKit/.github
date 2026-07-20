@@ -70,12 +70,28 @@ jobs:
       # actionlint globs `.github/workflows/` only, so composite actions are
       # invisible to it despite being shared infrastructure every caller runs.
       # See the script for exactly what it does and does not cover.
-      - name: Lint composite actions
+      # PyYAML ships on the ubuntu image today. If that ever changes, FAIL
+      # rather than pulling an unpinned wheel from the network: this file sits
+      # eight lines below a checksum-pinned actionlint, in a repo whose premise
+      # is that what it executes is auditable — an unpinned fetch here would
+      # contradict that, and it would be the least-exercised line in the job.
+      # It is also the same event as a missing shellcheck, which is handled by
+      # failing loudly; the two should not take opposite postures. (A pinned
+      # `--require-hashes` install is the fix if the image ever drops it.)
+      - name: Assert PyYAML is available
         run: |
           set -euo pipefail
-          # Don't assume the runner image ships PyYAML. If it stops doing so,
-          # the linter would crash with ModuleNotFoundError and this job would
-          # go red for a reason that has nothing to do with the change under
-          # test — so check, and install only if needed.
-          python3 -c 'import yaml' 2>/dev/null || pip3 install --quiet --disable-pip-version-check pyyaml
-          python3 .github/scripts/lint-composite-actions.py .
+          python3 -c 'import yaml; print("PyYAML", yaml.__version__)' || {
+            echo "::error title=PyYAML missing::The runner image no longer ships PyYAML. Add a pinned, hash-checked install rather than an unpinned pip3 install." >&2
+            exit 1
+          }
+
+      # The linter is itself a gate, so it carries tripwires: every check has a
+      # fixture that must fail, plus happy paths that must pass. Both bugs found
+      # reviewing this PR were cases where the linter exited 0 and printed
+      # success — exactly what these fixtures now catch.
+      - name: Test the composite linter
+        run: python3 .github/scripts/test_lint_composite_actions.py
+
+      - name: Lint composite actions
+        run: python3 .github/scripts/lint-composite-actions.py .
