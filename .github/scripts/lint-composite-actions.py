@@ -8,15 +8,20 @@ actionlint's expression parser.
 
 Checks, per composite action:
 
-  * `runs:` exists and, for `using: composite`, has `steps:`.
+  * `runs:` exists, `runs.using:` is present and a known runtime, and for
+    `using: composite` there are `steps:`. A missing or typo'd `using` is a hard
+    job-start failure in every caller, so it is an error rather than a
+    nothing-to-do.
   * Every step with `run:` declares `shell:`. This is the important one:
     `shell` is REQUIRED on a composite run step, and omitting it is a hard
     "Required property is missing: shell" failure at job start — in every
     caller at once. An earlier version of this lint treated a missing `shell`
     as "not bash, skip", so the exact breakage this repo's CI exists to catch
     sailed through green.
-  * Every `uses:` is pinned to a 40-hex commit SHA (this repo's convention),
-    not a tag or branch. Local `./...` and `docker://` refs are exempt.
+  * Every `uses:` is pinned: a 40-hex commit SHA for actions (this repo's
+    convention), an `@sha256:` digest for `docker://` images. Only local `./...`
+    refs are exempt — a mutable Docker tag is exactly the mutable reference
+    pinning exists to eliminate.
   * Each run step is shellchecked under the shell it actually declares — a
     `shell: sh` step checked as bash would let a bashism through, and GitHub
     runs it under `sh`.
@@ -174,6 +179,16 @@ def lint_action(path: Path, workdir: Path) -> tuple[int, list[tuple[Path, str]]]
 
 def main() -> int:
     root = Path(sys.argv[1] if len(sys.argv) > 1 else ".")
+
+    # A missing root globs to nothing, which is indistinguishable from a real
+    # tree with no actions — so a path typo would pass the gate silently. Third
+    # time this exit-0-having-checked-nothing shape has appeared in this file;
+    # rule it out explicitly.
+    if not root.is_dir():
+        fail(f"{root}: not a directory — refusing to report success for a path "
+             f"that cannot be searched")
+        return 1
+
     action_files = sorted(
         [*root.glob(".github/actions/*/action.yml"), *root.glob(".github/actions/*/action.yaml")]
     )
