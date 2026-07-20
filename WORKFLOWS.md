@@ -4,6 +4,69 @@ For the human sequencing around a release (merge order across core and the
 companions, when to run `companion-compat.yml`, changelog rewrite steps),
 see [RELEASE-PROCESS.md](RELEASE-PROCESS.md).
 
+## Linting this repo (`ci.yml`)
+
+Nothing here is a leaf: every file in `.github/workflows/` is a `workflow_call`
+reusable that four repos consume, and `.github/actions/setup-swift-ci` is a
+composite they all run. So a mistake in this repo does not fail *here* — it
+fails on first use, in every caller at once, after merge. `ci.yml` exists to
+move that failure before the merge.
+
+It runs `actionlint` (workflow schema, `uses:` shapes, per-key context
+availability, and the `${{ }}` **expression grammar**, plus shellcheck over
+every `run:` block, which actionlint auto-detects on ubuntu runners), then runs
+`.github/scripts/lint-composite-actions.py` over `.github/actions/*/action.yml`,
+because actionlint globs `.github/workflows/` only and composites are invisible
+to it.
+
+**Coverage is not symmetric, and the asymmetry matters.** Workflows get full
+expression checking; composite actions get **structural and shell checks only**:
+`runs.using:` must be present and a known runtime, every `run:` step must
+declare `shell:` (a missing one is a hard job-start failure in every caller),
+every `uses:` must be pinned — a 40-hex commit SHA for actions, an
+`@sha256:` digest for `docker://`, with local `./` refs exempt — and each run
+step is shellchecked under the shell it actually declares. Expressions inside a
+composite's `if:` / `${{ }}` are **not** validated: actionlint owns that grammar
+and does not read action files, and reimplementing its parser here would be
+worse than the gap. Treat a change to a composite's expressions as unlinted, and
+test it on a caller.
+
+The linter carries its own tripwires (`.github/scripts/test_lint_composite_actions.py`)
+— every check has a fixture that must fail plus happy paths that must pass, and
+CI runs them before the linter itself. This is not ceremony: both bugs found
+reviewing the PR that introduced this CI were cases where the linter exited 0
+and printed a success line.
+
+Run the same gate locally before pushing:
+
+```sh
+brew install actionlint shellcheck                          # once
+actionlint                                                  # workflows
+python3 .github/scripts/test_lint_composite_actions.py      # linter tripwires
+python3 .github/scripts/lint-composite-actions.py .         # composite actions
+```
+
+All three are what CI runs. The composite linter needs PyYAML (`pip3 install
+pyyaml` locally; the runner image already ships it) and shellcheck on `PATH` —
+it refuses to run without shellcheck rather than silently checking less.
+
+Two deliberate choices. **`actionlint` is pinned to a version with a checksum**
+rather than installed from a third-party action or an unpinned `curl | bash`:
+this repo is the supply chain for four other repos' CI, so what it executes
+should be auditable and reproducible — bump `ACTIONLINT_VERSION` and
+`ACTIONLINT_SHA256` together. **Draft PRs are not skipped**, unlike
+`swift-ci.yml`: a skipped required check counts as *passing* for branch
+protection, so skipping here to save seconds of ubuntu time would hand back the
+same hole — see the draft-PR discussion under [`swift-ci.yml`](#swift-ciyml).
+The job is cheap; it always runs.
+
+Why expression checking specifically earns its keep: YAML validity and GitHub
+expression validity are different questions, and only the second is evaluated
+at job start. A `runs-on:` computed with `fromJSON(... && ... || ...)` can parse
+as YAML and still be a syntax error to GitHub — which would fail every caller
+on every event, with no signal before merge. `actionlint` settles that
+statically.
+
 This repo (`ManifoldKit/.github`) hosts reusable `workflow_call` workflows and a
 shared composite action for the ManifoldKit companion repos
 (`manifold-llama`, `manifold-mlx`, `manifold-eval`, and any future backend
