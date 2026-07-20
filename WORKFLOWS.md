@@ -268,9 +268,13 @@ the estate's Swift repos — both SwiftPM packages (manifold-llama,
 manifold-mlx, manifold-eval) and XcodeGen app repos (basechat). `mode: spm`
 runs `swift build`/`swift test` directly; `mode: xcodegen` runs `xcodegen
 generate` then `xcodebuild build`/`xcodebuild test` against the generated
-project. Draft PRs are skipped (matches manifold-eval's guard):
-`if: github.event_name != 'pull_request' || github.event.pull_request.draft
-== false`.
+Draft PRs do **not** run the build: the job's first step fails fast on
+`github.event.pull_request.draft == true`, before any expensive step. The job
+is deliberately *not* skipped at job level any more — a skipped required check
+counts as passing, so a draft could satisfy branch protection without ever
+building. A draft is unmergeable regardless, so a red check there costs nothing
+and burns no build minutes, while guaranteeing the check can only be green if a
+real build ran. See "Draft PRs fail rather than skip" below.
 
 | Input | Default | Notes |
 |---|---|---|
@@ -344,16 +348,30 @@ jobs:
       scheme: BaseChat
 ```
 
-**Required, and load-bearing:** the `types:` list on `pull_request` must
-include `ready_for_review`. The reusable workflow's job skips draft PRs
-(`if: github.event_name != 'pull_request' ||
-github.event.pull_request.draft == false`), and a skipped job *counts as
-passing* for branch protection. With the bare `pull_request:` default types
-(`opened, synchronize, reopened` — `ready_for_review` is NOT among them), a
-PR opened as draft gets its CI job skipped, and marking it ready fires no
-event the caller subscribes to — so the PR becomes mergeable with CI never
-having actually run. Omitting the `types:` list here silently disarms the
-draft guard; it doesn't fail loudly at call time.
+**Draft PRs fail rather than skip.** The job used to carry a job-level guard
+(`if: github.event_name != 'pull_request' || github.event.pull_request.draft
+== false`), which skipped it entirely on drafts — and a skipped required check
+*counts as passing* for branch protection. That let a draft satisfy
+`test / build-and-test` without building, and keep satisfying it after being
+marked ready if no fresh run landed on that SHA.
+
+It bit for real on 2026-07-20: manifold-llama#153, a `feat!:` breaking change,
+was pushed and marked ready in the same second. The synchronize run evaluated
+`draft == true` and skipped; the `ready_for_review` run was cancelled by the
+caller's `cancel-in-progress` concurrency; auto-merge fired on the
+skipped-therefore-passing check and merged a breaking change the gate had never
+built. Only the post-merge run on `main` caught up (and happened to be green).
+
+Now the job always runs and its first step exits 1 on a draft, before any
+expensive step. A draft cannot be merged anyway, so the red check costs nothing
+and no build minutes are spent — and the check can only be green if a real build
+ran. No branch-protection change was needed; the existing required context
+became meaningful as-is.
+
+**Still recommended:** keep `ready_for_review` in the caller's `pull_request`
+`types:` list. It is no longer load-bearing for *safety* (a stale draft result
+is now red, not green), but without it, marking a PR ready fires no event and
+the PR simply stays red until the next push — correct, but confusing.
 
 **Concurrency must live in the caller, not the reusable workflow.** A
 `concurrency:` block declared inside `swift-ci.yml` itself would be keyed on

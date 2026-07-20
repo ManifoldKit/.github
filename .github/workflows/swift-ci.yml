@@ -94,13 +94,36 @@ permissions:
 
 jobs:
   build-and-test:
-    # Matches manifold-eval's draft-guard pattern: skip draft PRs, but still
-    # run on every other trigger (push, ready-for-review, workflow_dispatch,
-    # ...) where there is no pull_request context at all.
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    # NO job-level draft guard. This job previously carried
+    #   if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    # which skipped the whole job on draft PRs — and a *skipped* required check
+    # counts as PASSING for branch protection. So a draft PR could satisfy
+    # `test / build-and-test` without ever building, and stay satisfied after
+    # being marked ready if no fresh run landed on that SHA.
+    #
+    # That is not theoretical. On 2026-07-20 manifold-llama#153 (a `feat!:`
+    # breaking change) was pushed and marked ready in the same second: the
+    # synchronize run evaluated draft==true and skipped, the ready_for_review
+    # run was cancelled by `cancel-in-progress` concurrency in the caller, and
+    # auto-merge fired on the skipped-therefore-"passing" check. It merged with
+    # the gate never having built it; only the post-merge run on main caught up
+    # (and happened to be green).
+    #
+    # Fix: the job always runs, and on a draft it FAILS FAST before any
+    # expensive step. Draft PRs are unmergeable anyway, so a red check costs
+    # nothing and burns no build minutes — the zero-CI draft staging area is
+    # preserved. Crucially the check can now only be GREEN if a real build
+    # actually ran, so no branch-protection change is needed: the existing
+    # required context (`test / build-and-test`) becomes meaningful as-is.
     runs-on: ${{ fromJSON(inputs.runner) }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     steps:
+      - name: Draft PR — not verified
+        if: github.event_name == 'pull_request' && github.event.pull_request.draft == true
+        run: |
+          echo "::notice title=Draft not verified::This PR is a draft, so the build/test gate did not run. Mark it ready for review to verify it — this red check is expected and blocks an accidental merge on an unverified result."
+          exit 1
+
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
       - name: Setup Swift CI (spm)
