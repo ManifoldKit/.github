@@ -1,0 +1,97 @@
+name: CI
+
+# This repo had NO CI. That is a sharp edge, because nothing here is a leaf:
+# every workflow in `.github/workflows/` is a `workflow_call` reusable consumed
+# by manifold-llama, manifold-mlx, manifold-eval and basechat, and
+# `.github/actions/setup-swift-ci` is a composite they all run. A syntax or
+# expression error therefore does not fail *here* — it fails on first use, in
+# every caller at once, after merge.
+#
+# That is not hypothetical. PR #6 changed a `runs-on` to a computed expression;
+# `yaml.safe_load` accepting it proves nothing, because YAML validity and
+# GitHub *expression* validity are different questions, and the latter is only
+# evaluated at job start. The reviewer's honest position was "confidence high,
+# not certain — a real run is the only proof", and there was no run to have.
+# `actionlint` parses the expression grammar, so it settles that class of
+# question before merge instead of after.
+#
+# Deliberately NOT skipped on draft PRs. A skipped required check counts as
+# passing, which is the exact hole PR #6 fixed in `swift-ci.yml`; re-creating it
+# here to save a few seconds of ubuntu time would be absurd. This job is cheap
+# and always runs.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+
+      # Pinned version + checksum rather than a third-party action or a
+      # `curl | bash` of an unpinned installer: this repo is the supply chain
+      # for four other repos' CI, so what it executes should be auditable and
+      # reproducible. Bump both values together.
+      - name: Install actionlint (pinned, checksum-verified)
+        env:
+          ACTIONLINT_VERSION: "1.7.12"
+          ACTIONLINT_SHA256: "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
+        run: |
+          set -euo pipefail
+          tarball="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          url="https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${tarball}"
+          curl -fsSL --retry 3 -o "$tarball" "$url"
+          echo "${ACTIONLINT_SHA256}  ${tarball}" | sha256sum --check --strict -
+          tar -xzf "$tarball" actionlint
+          ./actionlint --version
+          # actionlint auto-detects shellcheck to lint `run:` blocks, and if it
+          # is ABSENT it disables that rule and still exits 0 — half the
+          # advertised coverage would vanish with no signal. Assert it exists so
+          # a change to the runner image fails loudly instead.
+          shellcheck --version
+
+      # actionlint checks workflow schema, `uses:` shapes, context availability
+      # per key, and the expression grammar inside `${{ }}`. With shellcheck
+      # present (asserted above) it also lints every `run:` block, so shell bugs
+      # in the reusable workflows are caught here too.
+      - name: actionlint (workflows, expressions, run-block shell)
+        run: ./actionlint -color
+
+      # actionlint globs `.github/workflows/` only, so composite actions are
+      # invisible to it despite being shared infrastructure every caller runs.
+      # See the script for exactly what it does and does not cover.
+      # PyYAML ships on the ubuntu image today. If that ever changes, FAIL
+      # rather than pulling an unpinned wheel from the network: this file sits
+      # eight lines below a checksum-pinned actionlint, in a repo whose premise
+      # is that what it executes is auditable — an unpinned fetch here would
+      # contradict that, and it would be the least-exercised line in the job.
+      # It is also the same event as a missing shellcheck, which is handled by
+      # failing loudly; the two should not take opposite postures. (A pinned
+      # `--require-hashes` install is the fix if the image ever drops it.)
+      - name: Assert PyYAML is available
+        run: |
+          set -euo pipefail
+          python3 -c 'import yaml; print("PyYAML", yaml.__version__)' || {
+            echo "::error title=PyYAML missing::The runner image no longer ships PyYAML. Add a pinned, hash-checked install rather than an unpinned pip3 install." >&2
+            exit 1
+          }
+
+      # The linter is itself a gate, so it carries tripwires: every check has a
+      # fixture that must fail, plus happy paths that must pass. Both bugs found
+      # reviewing this PR were cases where the linter exited 0 and printed
+      # success — exactly what these fixtures now catch.
+      - name: Test the composite linter
+        run: python3 .github/scripts/test_lint_composite_actions.py
+
+      - name: Lint composite actions
+        run: python3 .github/scripts/lint-composite-actions.py .
