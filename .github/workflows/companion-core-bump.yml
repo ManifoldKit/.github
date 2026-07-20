@@ -13,11 +13,24 @@ name: Companion core-bump (reusable)
 #      clean) if the pin is already at that version — safe to re-dispatch.
 #   2. Re-resolve, then run `gate-command` against the new core (defaults to
 #      `swift build && swift test`, mirroring core's ci.yml invocation).
-#   3. Commit Package.swift + Package.resolved, open a `fix:` PR, and
+#   3. Commit Package.swift + Package.resolved, open a compat-bump PR, and
 #      admin-squash-merge it. The merge push is authored by the caller's
 #      RELEASE_AUTOMERGE_TOKEN PAT (not the default GITHUB_TOKEN) so that a
 #      downstream push-triggered release-please workflow fires. The default
 #      token would NOT trigger that downstream workflow — hence the PAT.
+#
+# A pure core-pin republish carries no functional change, so it is committed
+# as `deps:` (which release-please v5 renders under a "Dependencies" changelog
+# heading, not "Bug Fixes") and forced to a patch release with a `Release-As:`
+# trailer — release-please only auto-cuts a release for feat/fix, so a bare
+# `deps:` would otherwise produce no release. The forced patch is used only
+# when the caller trips release-please AND this bump is the sole releasable
+# commit since the last tag — if any feat/fix/breaking is already queued, a
+# forced patch+1 could under-version it, so the commit falls back to `fix(deps):`
+# and release-please computes the version itself (same fallback when there is no
+# prior tag or the manifest can't be read). Net effect: compat republishes stop
+# inflating the "Bug Fixes" changelog and the fix-commit count, while a genuine
+# feature or breaking change queued alongside still versions correctly.
 #
 # Requires secret RELEASE_AUTOMERGE_TOKEN: a fine-grained PAT on the caller
 # repo with Contents: read+write and Pull requests: read+write. This is
@@ -98,6 +111,11 @@ jobs:
         with:
           # PAT so the eventual merge push triggers the caller's release-please.
           token: ${{ secrets.RELEASE_AUTOMERGE_TOKEN }}
+          # Full history + tags: the PR step scans commits since the last
+          # release tag to decide whether a breaking change is queued (which
+          # forbids the forced-patch Release-As path below). A shallow checkout
+          # would hide that history and silently disable the guard.
+          fetch-depth: 0
 
       - name: Rewrite ManifoldKit pin
         id: edit
@@ -164,27 +182,101 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.RELEASE_AUTOMERGE_TOKEN }}
           VERSION: ${{ inputs.version }}
+          TRIP_RP: ${{ inputs.trip-release-please }}
         run: |
           set -euo pipefail
           TAG="v${VERSION}"
           BRANCH="auto/bump-manifoldkit-${TAG}"
+
+          # --- Choose the commit type + optional Release-As trailer ----------
+          # Default: a pure compat republish is `deps:` forced to a patch via
+          # Release-As (lands under the "Dependencies" changelog heading). Fall
+          # back to `fix(deps):` — still scope-tagged, so it is distinguishable
+          # from a real bug fix — whenever the forced patch would be unsafe or
+          # pointless:
+          #   * caller does not trip release-please (e.g. manifold-eval);
+          #   * a breaking change is queued since the last tag (forcing a patch
+          #     would downgrade its minor bump);
+          #   * no prior tag, or the manifest version can't be read (can't
+          #     safely compute the next patch or verify the breaking-change
+          #     guard).
+          SUBJECT="deps: bump ManifoldKit pin to ${TAG}"
+          RELEASE_AS=""
+          if [ "${TRIP_RP}" = "true" ]; then
+            LAST_TAG="$(git describe --tags --abbrev=0 2>/dev/null || true)"
+            # Force a patch via Release-As ONLY when this deps bump would be the
+            # *sole releasable commit* since the last tag. release-please moves
+            # the version on feat/fix and on any breaking change (`type!:` or a
+            # `BREAKING CHANGE` trailer); every other type (perf, refactor,
+            # docs, chore, a prior deps) leaves it put. If any releasable commit
+            # is already queued, release-please will cut the release itself and
+            # compute the correct bump — pinning it to patch+1 here would
+            # under-version a queued feature (patch instead of its minor,
+            # especially once a companion reaches 1.0) or a breaking change. So
+            # in that case fall back to fix(deps): and let release-please decide.
+            RELEASABLE=""
+            if [ -n "$LAST_TAG" ]; then
+              RELEASABLE="$(git log "${LAST_TAG}..HEAD" --format='%s%n%b' \
+                | grep -Ei '^(feat|fix)(\([^)]*\))?!?:|^[a-z]+(\([^)]*\))?!:|BREAKING[ -]CHANGE' || true)"
+            fi
+            NEXT_PATCH=""
+            if [ -f .release-please-manifest.json ]; then
+              CUR="$(jq -r '.["."] // empty' .release-please-manifest.json 2>/dev/null || true)"
+              if printf '%s' "$CUR" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+                MAJ="${CUR%%.*}"; REST="${CUR#*.}"; MIN="${REST%%.*}"; PAT="${REST##*.}"
+                NEXT_PATCH="${MAJ}.${MIN}.$((PAT + 1))"
+              fi
+            fi
+            # Defence against a manifest that lags the latest tag: never force a
+            # version that already exists as a tag (would be a duplicate/older
+            # release). Fall back to fix(deps): if patch+1 is already tagged.
+            NEXT_EXISTS=""
+            if [ -n "$NEXT_PATCH" ] && git rev-parse -q --verify "refs/tags/v${NEXT_PATCH}" >/dev/null 2>&1; then
+              NEXT_EXISTS="yes"
+            fi
+            if [ -n "$LAST_TAG" ] && [ -z "$RELEASABLE" ] && [ -z "$NEXT_EXISTS" ] \
+               && printf '%s' "$NEXT_PATCH" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+              RELEASE_AS="$NEXT_PATCH"
+            else
+              SUBJECT="fix(deps): bump ManifoldKit pin to ${TAG}"
+              if [ -n "$RELEASABLE" ]; then
+                echo "A releasable commit (feat/fix/breaking) is queued since ${LAST_TAG:-<none>}; using fix(deps): so release-please computes the version."
+              fi
+            fi
+          else
+            # Non-release-tripping caller: type is cosmetic, but keep it
+            # scope-tagged for consistency with the release-tripping path.
+            SUBJECT="fix(deps): bump ManifoldKit pin to ${TAG}"
+          fi
+
+          BODY="Automated: ManifoldKit ${TAG} shipped. Pin re-resolved, built, and tested green against the new core."
+          if [ -n "$RELEASE_AS" ]; then
+            # The trailer must live in the commit release-please parses on main,
+            # so it goes in the squash-merge body below — not just the PR body.
+            BODY="${BODY}"$'\n\n'"Release-As: ${RELEASE_AS}"
+            echo "Forcing patch release ${RELEASE_AS} via Release-As (deps: republish)."
+          fi
+
           git config user.name "manifold-release-bot"
           git config user.email "noreply@github.com"
           git checkout -b "$BRANCH"
           git add Package.swift Package.resolved
-          git commit -m "fix: bump ManifoldKit pin to ${TAG}"
+          git commit -m "$SUBJECT"
           git push --force-with-lease origin "$BRANCH"
           PR_URL=$(gh pr create \
             --repo "${{ github.repository }}" \
-            --title "fix: bump ManifoldKit pin to ${TAG}" \
-            --body "Automated: ManifoldKit ${TAG} shipped. Pin re-resolved, built, and tested green against the new core. Merging trips release-please for a patch release." \
+            --title "$SUBJECT" \
+            --body "$BODY" \
             --head "$BRANCH" --base main)
           echo "Opened $PR_URL"
           echo "pr_url=$PR_URL" >> "$GITHUB_OUTPUT"
           # Inline gate already ran the identical suite; admin-merge past the
           # redundant required check (assumes enforce_admins is off on main,
-          # matching core's and the companions' branch protection).
-          gh pr merge "$PR_URL" --repo "${{ github.repository }}" --squash --admin --delete-branch
+          # matching core's and the companions' branch protection). Pass the
+          # squash subject/body explicitly so the Release-As trailer lands in
+          # the commit on main verbatim (default squash bodies can drop it).
+          gh pr merge "$PR_URL" --repo "${{ github.repository }}" --squash --admin --delete-branch \
+            --subject "$SUBJECT" --body "$BODY"
           echo "Merged $PR_URL"
 
       - name: release-please-trigger
