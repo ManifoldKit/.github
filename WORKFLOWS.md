@@ -396,11 +396,18 @@ the PR simply stays red until the next push — correct, but confusing.
 
 The same applies to `paths-ignore`: path filters apply to **all** `pull_request`
 activity types, `ready_for_review` included, so a ready-flip whose diff touches
-only ignored paths fires nothing and the draft-era red persists until a
-qualifying push. That direction is fail-safe — before this fix the sticky state
-was green (unsafe but self-clearing); now it is red (safe but sticky) — so it is
-friction, not a hole. Push any qualifying change, or re-run the workflow, to
-clear it.
+only ignored paths fires nothing and the draft-era red persists. That direction
+is fail-safe — before this fix the sticky state was green (unsafe but
+self-clearing); now it is red (safe but sticky) — so it is friction, not a hole.
+
+**Re-running the workflow does not clear it.** A re-run replays the *original
+event payload*, which carries `draft: true`, so step 0 evaluates the same way
+and fails identically — leaving a "This PR is a draft" annotation on a PR that
+is no longer a draft. The remedy is a push that touches a non-`paths-ignore`d
+path. Note that on a PR whose diff is *entirely* ignored paths — the
+Release-Please-shaped case those filters exist for — there may be no such push
+available that doesn't pollute the diff; those PRs are the documented
+direct-merge carve-out and are merged via `gh api ... /merge` anyway.
 
 **Concurrency must live in the caller, not the reusable workflow.** A
 `concurrency:` block declared inside `swift-ci.yml` itself would be keyed on

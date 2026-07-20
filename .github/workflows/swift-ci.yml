@@ -126,7 +126,22 @@ jobs:
     # routed to `ubuntu-latest`, which only ever runs `exit 1`. The context
     # name is unaffected by the runner, so this is invisible to branch
     # protection.
-    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.draft) && 'ubuntu-latest' || fromJSON(inputs.runner) }}
+    #
+    # The ternary selects the JSON *text* and applies fromJSON once, rather
+    # than returning a bare string on one branch and a fromJSON() result on the
+    # other. `runner` is documented above to accept an ARRAY form
+    # ('["self-hosted", "macos"]') for runner groups/labels, and mixing a plain
+    # string with an array across `||` risks the array's typing not surviving
+    # to `runs-on` — which would break the real build path for a self-hosted
+    # caller while the draft path it optimizes works fine. Selecting the text
+    # keeps both branches identically typed, so array callers are unaffected.
+    #
+    # NOTE: this condition and step 0's `if` below must stay in agreement —
+    # ubuntu is chosen precisely when step 0 aborts the job. If a future edit
+    # changes one and not the other, a real Swift build lands on ubuntu. That
+    # fails loudly (no Swift toolchain), never silently green, but keep them
+    # in sync anyway.
+    runs-on: ${{ fromJSON((github.event_name == 'pull_request' && github.event.pull_request.draft) && '"ubuntu-latest"' || inputs.runner) }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     steps:
       - name: Draft PR — not verified
