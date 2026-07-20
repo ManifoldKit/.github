@@ -331,14 +331,19 @@ the estate's Swift repos — both SwiftPM packages (manifold-llama,
 manifold-mlx, manifold-eval) and XcodeGen app repos (basechat). `mode: spm`
 runs `swift build`/`swift test` directly; `mode: xcodegen` runs `xcodegen
 generate` then `xcodebuild build`/`xcodebuild test` against the generated
-project. Draft PRs are skipped (matches manifold-eval's guard):
-`if: github.event_name != 'pull_request' || github.event.pull_request.draft
-== false`.
+project. Draft PRs do **not** run the build: the job's first step fails fast on
+`github.event.pull_request.draft == true`, before any expensive step. The job
+is deliberately *not* skipped at job level any more — a skipped required check
+counts as passing, so a draft could satisfy branch protection without ever
+building. A draft is unmergeable regardless, so a red check there is harmless,
+and drafts are routed to `ubuntu-latest` so they cost one cheap runner
+allocation rather than a scarce macOS slot. See "Draft PRs fail rather than
+skip" below.
 
 | Input | Default | Notes |
 |---|---|---|
 | `mode` | `spm` | `spm` or `xcodegen`. |
-| `runner` | `'"macos-15"'` | JSON-encoded, consumed as `runs-on: ${{ fromJSON(inputs.runner) }}`. The default is the JSON string `"macos-15"` (note the escaped inner quotes) so `fromJSON` yields the plain string `macos-15`. Pass a JSON array the same way to target a runner group, e.g. `'["self-hosted", "macos"]'`. |
+| `runner` | `'"macos-15"'` | JSON-encoded, consumed via `fromJSON()` into `runs-on` (drafts excepted — see "Draft PRs fail rather than skip"). The default is the JSON string `"macos-15"` (note the escaped inner quotes) so `fromJSON` yields the plain string `macos-15`. Pass a JSON array the same way to target a runner group, e.g. `'["self-hosted", "macos"]'` — the `runs-on` expression selects JSON *text* and parses once precisely so the array form keeps its type; do not "simplify" it back to a bare-string branch. |
 | `xcode-version` | `26.3` | Passed to `setup-swift-ci` (spm mode) or directly to `maxim-lobanov/setup-xcode` (xcodegen mode). |
 | `skip-xcode-select` | `false` | Set `true` for self-hosted-runner callers: skips Xcode version selection entirely, in both `spm` mode (plumbed into `setup-swift-ci`'s own `skip-xcode-select` input) and `xcodegen` mode (skips the direct `maxim-lobanov/setup-xcode` step). Self-hosted runners already have their toolchain configured, and a pinned version string like `26.3` often won't literally match what's installed, which makes `setup-xcode` hard-fail. Use this instead of hand-managing `xcode-select` in the caller. **Omitting this input is a no-op** — default `false` reproduces exactly the prior behavior (Select Xcode always runs). An alternative considered: globbing the newest installed Xcode and running `xcode-select` against it (the pattern `ManifoldKit/ManifoldKit`'s `companion-compat.yml` already uses for its self-hosted job) — deferred in favor of the simpler skip, since self-hosted runners in this estate pre-select their toolchain outside CI. |
 | `cache-key-suffix` | `""` | spm mode only: passed through to `setup-swift-ci`. Ignored in xcodegen mode, which skips the composite — its SwiftPM cache keys on `Package.resolved` (absent in an XcodeGen repo, so it would always miss) and never covers xcodebuild's DerivedData. |
@@ -407,16 +412,70 @@ jobs:
       scheme: BaseChat
 ```
 
-**Required, and load-bearing:** the `types:` list on `pull_request` must
-include `ready_for_review`. The reusable workflow's job skips draft PRs
-(`if: github.event_name != 'pull_request' ||
-github.event.pull_request.draft == false`), and a skipped job *counts as
-passing* for branch protection. With the bare `pull_request:` default types
-(`opened, synchronize, reopened` — `ready_for_review` is NOT among them), a
-PR opened as draft gets its CI job skipped, and marking it ready fires no
-event the caller subscribes to — so the PR becomes mergeable with CI never
-having actually run. Omitting the `types:` list here silently disarms the
-draft guard; it doesn't fail loudly at call time.
+**Draft PRs fail rather than skip.** The job used to carry a job-level guard
+(`if: github.event_name != 'pull_request' || github.event.pull_request.draft
+== false`), which skipped it entirely on drafts — and a skipped required check
+*counts as passing* for branch protection. That let a draft satisfy
+`test / build-and-test` without building, and keep satisfying it after being
+marked ready if no fresh run landed on that SHA.
+
+It bit for real on 2026-07-20: manifold-llama#153, a `feat!:` breaking change,
+was pushed and marked ready in the same second. The synchronize run evaluated
+`draft == true` and skipped; the `ready_for_review` run was cancelled by the
+caller's `cancel-in-progress` concurrency; auto-merge fired on the
+skipped-therefore-passing check and merged a breaking change the gate had never
+built. Only the post-merge run on `main` caught up (and happened to be green).
+
+Now the job always runs and its first step exits 1 on a draft, before any
+expensive step, so the check can only be green if a real build ran.
+
+**Cost, stated precisely:** a draft is no longer free. The job is *scheduled*
+rather than skipped, so one runner is queued and booted before step 1 exits —
+no *build* minutes, but a runner allocation. On `macos-15` (billed 10x, ~5
+concurrent org-wide) that would take a slot from other queued jobs on every
+draft push, across four repos, in an estate whose documented practice is to
+open a draft PR the moment code compiles. Drafts are therefore routed to
+`ubuntu-latest` via the `runs-on` expression; the runner does not affect the
+check's context name, so this is invisible to branch protection.
+
+**Unknown `mode` fails closed.** Every build/test step is gated on
+`inputs.mode == 'spm'` or `== 'xcodegen'`, so an unrecognized value would skip
+all of them and exit success having built nothing — the same
+green-without-a-build hole, reachable by a typo. A `Validate mode` step now
+rejects anything else.
+
+**Required context name.** It is `<caller job id> / build-and-test`, so it
+depends on what the caller names its job — the example shims below use `ci`
+(→ `ci / build-and-test`), while manifold-mlx and manifold-llama both name it
+`test` and both require `test / build-and-test` (verified against live branch
+protection). Read your own caller before configuring branch protection. No
+branch-protection change was needed for this fix: the job, and therefore the
+context name, is unchanged.
+
+**Still recommended:** keep `ready_for_review` in the caller's `pull_request`
+`types:` list. It is no longer load-bearing for *safety* (a stale draft result
+is now red, not green), but without it, marking a PR ready fires no event and
+the PR simply stays red until the next push — correct, but confusing.
+
+The same applies to `paths-ignore`: path filters apply to **all** `pull_request`
+activity types, `ready_for_review` included, so a ready-flip whose diff touches
+only ignored paths fires nothing and the draft-era red persists. That direction
+is fail-safe — before this fix the sticky state was green (unsafe but
+self-clearing); now it is red (safe but sticky) — so it is friction, not a hole.
+
+**Re-running the workflow does not clear it.** A re-run replays the *original
+event payload*, which carries `draft: true`, so step 0 evaluates the same way
+and fails identically — leaving a "This PR is a draft" annotation on a PR that
+is no longer a draft. The remedy is a push that touches a non-`paths-ignore`d
+path. Note that on a PR whose diff is *entirely* ignored paths — the
+Release-Please-shaped case those filters exist for — there may be no such push
+available that doesn't pollute the diff. In practice those PRs never needed the
+check to pass: their whole diff is `paths-ignore`d, so the required context
+never reports at all and they are merged directly with
+`gh api --method PUT repos/<owner>/<repo>/pulls/<N>/merge`. That is a narrow,
+deliberate exception to the usual "no `--admin`, no `gh api` direct merge" rule
+rather than a licence to bypass checks generally; ManifoldKit's `AGENTS.md`
+records it under "Companion pin-bump releases".
 
 **Concurrency must live in the caller, not the reusable workflow.** A
 `concurrency:` block declared inside `swift-ci.yml` itself would be keyed on
