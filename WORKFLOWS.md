@@ -4,6 +4,43 @@ For the human sequencing around a release (merge order across core and the
 companions, when to run `companion-compat.yml`, changelog rewrite steps),
 see [RELEASE-PROCESS.md](RELEASE-PROCESS.md).
 
+## Linting this repo (`ci.yml`)
+
+Nothing here is a leaf: every file in `.github/workflows/` is a `workflow_call`
+reusable that four repos consume, and `.github/actions/setup-swift-ci` is a
+composite they all run. So a mistake in this repo does not fail *here* — it
+fails on first use, in every caller at once, after merge. `ci.yml` exists to
+move that failure before the merge.
+
+It runs `actionlint` (workflow schema, `uses:` shapes, per-key context
+availability, and the `${{ }}` **expression grammar**, plus shellcheck over
+every `run:` block, which actionlint auto-detects on ubuntu runners), then
+separately parses each composite `action.yml` and shellchecks its bash steps —
+actionlint globs `.github/workflows/` only, so composites are invisible to it.
+
+Run the same gate locally before pushing:
+
+```sh
+brew install actionlint shellcheck   # once
+actionlint                           # from the repo root
+```
+
+Two deliberate choices. **`actionlint` is pinned to a version with a checksum**
+rather than installed from a third-party action or an unpinned `curl | bash`:
+this repo is the supply chain for four other repos' CI, so what it executes
+should be auditable and reproducible — bump `ACTIONLINT_VERSION` and
+`ACTIONLINT_SHA256` together. **Draft PRs are not skipped**, unlike
+`swift-ci.yml`: a skipped required check counts as passing (see "Draft PRs fail
+rather than skip" below), and re-creating that hole here to save seconds of
+ubuntu time would be self-defeating. The job is cheap; it always runs.
+
+Why expression checking specifically earns its keep: YAML validity and GitHub
+expression validity are different questions, and only the second is evaluated
+at job start. A `runs-on:` computed with `fromJSON(... && ... || ...)` can parse
+as YAML and still be a syntax error to GitHub — which would fail every caller
+on every event, with no signal before merge. `actionlint` settles that
+statically.
+
 This repo (`ManifoldKit/.github`) hosts reusable `workflow_call` workflows and a
 shared composite action for the ManifoldKit companion repos
 (`manifold-llama`, `manifold-mlx`, `manifold-eval`, and any future backend
