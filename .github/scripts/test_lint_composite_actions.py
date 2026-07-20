@@ -102,6 +102,19 @@ runs:
         True,
     ),
     (
+        # The allowlist must not rot: a node runtime GitHub has not shipped yet
+        # should pass on the day it does, without a release of this linter.
+        "using: node26 (future runtime) is accepted",
+        """
+name: t
+description: d
+runs:
+  using: node26
+  main: index.js
+""",
+        False,
+    ),
+    (
         "using: node20 with no steps is legitimate",
         """
 name: t

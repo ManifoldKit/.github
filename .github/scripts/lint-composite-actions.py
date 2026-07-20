@@ -49,7 +49,18 @@ SHELLCHECKABLE = {"bash", "sh"}
 # `using` is a required property of every action. Unknown values are rejected
 # rather than waved through: a typo'd runtime fails at job start in every
 # caller, which is the failure class this linter exists to move earlier.
-KNOWN_USING = {"composite", "docker", "node12", "node16", "node20", "node24"}
+#
+# The node family is matched by pattern rather than enumerated, so this does not
+# rot the day GitHub ships node26 — the alternative (a literal list) would fail
+# a legitimate action and need a release to fix. `composit` and `nodeXX` still
+# fail, which is the point: only rejecting a *missing* `using` would wave a typo
+# straight through.
+KNOWN_USING = {"composite", "docker"}
+NODE_USING_RE = re.compile(r"^node\d+$")
+
+
+def is_known_using(using: str) -> bool:
+    return using in KNOWN_USING or bool(NODE_USING_RE.match(using))
 # SC1091: "not following sourced file" — the sourced path doesn't exist in the
 # extracted fragment's directory. That is genuinely not checkable here.
 # Deliberately NOT excluded: SC2034 (unused variable). A composite run step is
@@ -92,9 +103,9 @@ def lint_action(path: Path, workdir: Path) -> tuple[int, list[tuple[Path, str]]]
     if using is None:
         fail(f"{path}: `runs.using:` is missing — it is required on every action")
         return 1, scripts
-    if using not in KNOWN_USING:
+    if not isinstance(using, str) or not is_known_using(using):
         fail(f"{path}: `runs.using: {using!r}` is not a known runtime "
-             f"({', '.join(sorted(KNOWN_USING))})")
+             f"({', '.join(sorted(KNOWN_USING))}, or nodeNN)")
         return 1, scripts
 
     if using == "composite" and not steps:
