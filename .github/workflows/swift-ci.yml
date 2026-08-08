@@ -201,18 +201,30 @@ jobs:
         if: inputs.lint == true
         run: |
           set -euo pipefail
-          # Lint top-level dirs/files, skipping .build and .git: .build holds
-          # SwiftPM's fetched dependency checkouts (not this repo's own code)
-          # plus plugin-generated sources, neither of which this caller's
-          # style pass ever wrote or owns.
+          # Lint top-level dirs (recursed into, .swift-filtered by
+          # --recursive) plus top-level *.swift files, skipping .build and
+          # .git. `swift-format lint` only filters to *.swift when recursing
+          # into a directory — an explicit file argument is parsed as Swift
+          # regardless of extension, so passing e.g. README.md or
+          # Package.resolved directly floods the run with parse errors on
+          # non-Swift syntax. .build is excluded because it holds SwiftPM's
+          # fetched dependency checkouts (not this repo's own code) plus
+          # plugin-generated sources, neither of which this caller's style
+          # pass ever wrote or owns.
           targets=()
           for entry in * .[!.]*; do
             [ -e "$entry" ] || continue
             case "$entry" in
               .build|.git) continue ;;
             esac
-            targets+=("$entry")
+            if [ -d "$entry" ] || [[ "$entry" == *.swift ]]; then
+              targets+=("$entry")
+            fi
           done
+          if [ "${#targets[@]}" -eq 0 ]; then
+            echo "No Swift sources found to lint."
+            exit 0
+          fi
           xcrun swift-format lint --recursive --strict --parallel "${targets[@]}"
 
       - name: Setup Swift CI (spm)

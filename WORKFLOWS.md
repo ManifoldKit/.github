@@ -355,7 +355,7 @@ skip" below.
 | `run-tests` | `true` | xcodegen mode only: `xcodebuild test` when true, `xcodebuild build` when false. |
 | `extra-xcodebuild-flags` | `-skipPackagePluginValidation -skipMacroValidation CODE_SIGNING_ALLOWED=NO` | xcodegen mode only. |
 | `timeout-minutes` | `45` | Job-level timeout. |
-| `lint` | `false` | Opt-in. When true, runs `swift-format lint --recursive --strict --parallel` (via `xcrun swift-format`, bundled in the Xcode/Swift 6 toolchain — no install step) over every top-level entry except `.build` and `.git`, before any build/toolchain-setup step. Applies in both `spm` and `xcodegen` mode. **Check only — never rewrites.** A repo with unformatted history will fail immediately on first enable; run a one-time `swift-format format --recursive --in-place <paths>` pass and land it *before* flipping this on, as its own PR (do not bundle a mechanical reformat into the PR that enables the gate). Default `false` is a no-op for every existing caller. |
+| `lint` | `false` | Opt-in. When true, runs `swift-format lint --recursive --strict --parallel` (via `xcrun swift-format`, bundled in the Xcode/Swift 6 toolchain — no install step) over top-level directories (recursed, `.swift`-filtered) plus top-level `*.swift` files, excluding `.build` and `.git`, before any build/toolchain-setup step. Applies in both `spm` and `xcodegen` mode. Non-`.swift` top-level files (`README.md`, `Package.resolved`, JSON configs, …) are deliberately NOT passed as explicit arguments — `swift-format lint` only filters to `*.swift` when recursing into a directory; an explicit file argument is parsed as Swift regardless of extension, so passing e.g. `Package.resolved` directly floods the run with parse errors on JSON syntax. **Check only — never rewrites.** A repo with unformatted history will fail immediately on first enable; run a one-time `swift-format format --recursive --in-place <paths>` pass and land it *before* flipping this on, as its own PR (do not bundle a mechanical reformat into the PR that enables the gate). Default `false` is a no-op for every existing caller. |
 
 `permissions: contents: read` suffices — no secrets are needed in either mode.
 
@@ -425,7 +425,7 @@ jobs:
       lint: true
 ```
 
-Verify locally first with `xcrun swift-format lint --recursive --strict --parallel <top-level entries except .build/.git>` (same invocation CI runs) — a repo with unformatted history will fail on the first PR after enabling. Run `xcrun swift-format format --recursive --in-place <paths>` as a one-time, standalone PR before enabling, not bundled with the flag flip.
+Verify locally first with `xcrun swift-format lint --recursive --strict --parallel <top-level dirs and *.swift files, excluding .build/.git>` (same invocation CI runs — see the `lint` input row above for why non-`.swift` top-level files must be left out) — a repo with unformatted history will fail on the first PR after enabling. Run `xcrun swift-format format --recursive --in-place <paths>` as a one-time, standalone PR before enabling, not bundled with the flag flip.
 
 **Draft PRs fail rather than skip.** The job used to carry a job-level guard
 (`if: github.event_name != 'pull_request' || github.event.pull_request.draft
