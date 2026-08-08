@@ -88,6 +88,19 @@ on:
         required: false
         type: number
         default: 45
+      lint:
+        description: >
+          Opt-in: run `swift-format lint --strict --recursive` over the
+          checked-out sources (excluding `.build`), using the toolchain's
+          bundled `swift-format` — no install step, identical on hosted and
+          self-hosted runners. Default false: existing callers see zero
+          change until they explicitly set this true. A repo with unformatted
+          history should NOT flip this on until a one-time `swift-format
+          format --recursive --in-place` pass has landed first — this input
+          only checks, it never rewrites.
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -173,6 +186,34 @@ jobs:
           esac
 
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+
+      - name: Lint (swift-format)
+        # Opt-in, default false — see the `lint` input doc above. Runs before
+        # any build/toolchain-setup step so a formatting failure is cheap and
+        # fast on both hosted and self-hosted runners. `swift-format` ships
+        # inside the Xcode/Swift 6 toolchain (invoked via `xcrun` so it uses
+        # whichever toolchain is already selected — no extra setup step, and
+        # no dependency on `setup-swift-ci` having run yet), so this needs
+        # nothing beyond checkout. `--strict` makes any diagnostic (not just
+        # errors) a non-zero exit; `.build` is excluded because SwiftPM
+        # artifacts and plugin-generated sources are not something a caller's
+        # style pass ever wrote or owns.
+        if: inputs.lint == true
+        run: |
+          set -euo pipefail
+          # Lint top-level dirs/files, skipping .build and .git: .build holds
+          # SwiftPM's fetched dependency checkouts (not this repo's own code)
+          # plus plugin-generated sources, neither of which this caller's
+          # style pass ever wrote or owns.
+          targets=()
+          for entry in * .[!.]*; do
+            [ -e "$entry" ] || continue
+            case "$entry" in
+              .build|.git) continue ;;
+            esac
+            targets+=("$entry")
+          done
+          xcrun swift-format lint --recursive --strict --parallel "${targets[@]}"
 
       - name: Setup Swift CI (spm)
         # spm mode only: the composite's SwiftPM cache keys on

@@ -355,6 +355,7 @@ skip" below.
 | `run-tests` | `true` | xcodegen mode only: `xcodebuild test` when true, `xcodebuild build` when false. |
 | `extra-xcodebuild-flags` | `-skipPackagePluginValidation -skipMacroValidation CODE_SIGNING_ALLOWED=NO` | xcodegen mode only. |
 | `timeout-minutes` | `45` | Job-level timeout. |
+| `lint` | `false` | Opt-in. When true, runs `swift-format lint --recursive --strict --parallel` (via `xcrun swift-format`, bundled in the Xcode/Swift 6 toolchain — no install step) over every top-level entry except `.build` and `.git`, before any build/toolchain-setup step. Applies in both `spm` and `xcodegen` mode. **Check only — never rewrites.** A repo with unformatted history will fail immediately on first enable; run a one-time `swift-format format --recursive --in-place <paths>` pass and land it *before* flipping this on, as its own PR (do not bundle a mechanical reformat into the PR that enables the gate). Default `false` is a no-op for every existing caller. |
 
 `permissions: contents: read` suffices — no secrets are needed in either mode.
 
@@ -411,6 +412,20 @@ jobs:
       project: BaseChat.xcodeproj
       scheme: BaseChat
 ```
+
+### Enabling the opt-in lint lane
+
+Add `lint: true` under `with:` in either shim above — nothing else changes:
+
+```yaml
+jobs:
+  ci:
+    uses: ManifoldKit/.github/.github/workflows/swift-ci.yml@main
+    with:
+      lint: true
+```
+
+Verify locally first with `xcrun swift-format lint --recursive --strict --parallel <top-level entries except .build/.git>` (same invocation CI runs) — a repo with unformatted history will fail on the first PR after enabling. Run `xcrun swift-format format --recursive --in-place <paths>` as a one-time, standalone PR before enabling, not bundled with the flag flip.
 
 **Draft PRs fail rather than skip.** The job used to carry a job-level guard
 (`if: github.event_name != 'pull_request' || github.event.pull_request.draft
