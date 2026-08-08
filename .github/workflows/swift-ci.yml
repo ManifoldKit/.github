@@ -90,14 +90,22 @@ on:
         default: 45
       lint:
         description: >
-          Opt-in: run `swift-format lint --strict --recursive` over the
-          checked-out sources (excluding `.build`), using the toolchain's
-          bundled `swift-format` — no install step, identical on hosted and
-          self-hosted runners. Default false: existing callers see zero
-          change until they explicitly set this true. A repo with unformatted
-          history should NOT flip this on until a one-time `swift-format
-          format --recursive --in-place` pass has landed first — this input
-          only checks, it never rewrites.
+          Opt-in: run `swift-format lint --recursive --strict --parallel
+          --follow-symlinks` over the checked-out sources, using the
+          toolchain's bundled `swift-format` (invoked via `xcrun` AFTER Xcode
+          selection, so it resolves against the caller's pinned
+          `xcode-version` rather than the runner image's default — this
+          ordering, not toolchain-bundling alone, is what makes the result
+          comparable across hosted and self-hosted callers) — no separate
+          install step. Scope: top-level directories (recursed,
+          `.swift`-filtered, symlinks followed) plus top-level `*.swift`
+          files; `.build`, `.git`, and other non-`.swift` top-level files are
+          excluded — see WORKFLOWS.md for the full mechanism and why.
+          Default false: existing callers see zero change until they
+          explicitly set this true. A repo with unformatted history should
+          NOT flip this on until a one-time `swift-format format --recursive
+          --in-place` pass has landed first — this input only checks, it
+          never rewrites.
         required: false
         type: boolean
         default: false
@@ -187,46 +195,6 @@ jobs:
 
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
-      - name: Lint (swift-format)
-        # Opt-in, default false — see the `lint` input doc above. Runs before
-        # any build/toolchain-setup step so a formatting failure is cheap and
-        # fast on both hosted and self-hosted runners. `swift-format` ships
-        # inside the Xcode/Swift 6 toolchain (invoked via `xcrun` so it uses
-        # whichever toolchain is already selected — no extra setup step, and
-        # no dependency on `setup-swift-ci` having run yet), so this needs
-        # nothing beyond checkout. `--strict` makes any diagnostic (not just
-        # errors) a non-zero exit; `.build` is excluded because SwiftPM
-        # artifacts and plugin-generated sources are not something a caller's
-        # style pass ever wrote or owns.
-        if: inputs.lint == true
-        run: |
-          set -euo pipefail
-          # Lint top-level dirs (recursed into, .swift-filtered by
-          # --recursive) plus top-level *.swift files, skipping .build and
-          # .git. `swift-format lint` only filters to *.swift when recursing
-          # into a directory — an explicit file argument is parsed as Swift
-          # regardless of extension, so passing e.g. README.md or
-          # Package.resolved directly floods the run with parse errors on
-          # non-Swift syntax. .build is excluded because it holds SwiftPM's
-          # fetched dependency checkouts (not this repo's own code) plus
-          # plugin-generated sources, neither of which this caller's style
-          # pass ever wrote or owns.
-          targets=()
-          for entry in * .[!.]*; do
-            [ -e "$entry" ] || continue
-            case "$entry" in
-              .build|.git) continue ;;
-            esac
-            if [ -d "$entry" ] || [[ "$entry" == *.swift ]]; then
-              targets+=("$entry")
-            fi
-          done
-          if [ "${#targets[@]}" -eq 0 ]; then
-            echo "No Swift sources found to lint."
-            exit 0
-          fi
-          xcrun swift-format lint --recursive --strict --parallel "${targets[@]}"
-
       - name: Setup Swift CI (spm)
         # spm mode only: the composite's SwiftPM cache keys on
         # hashFiles('Package.resolved'), which an XcodeGen app repo doesn't
@@ -249,6 +217,61 @@ jobs:
         uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1
         with:
           xcode-version: ${{ inputs.xcode-version }}
+
+      - name: Lint (swift-format)
+        # Opt-in, default false — see the `lint` input doc above. MUST run
+        # after both toolchain-selection steps above ("Setup Swift CI (spm)"
+        # and "Select Xcode (xcodegen)"), not before: `swift-format` is
+        # invoked via `xcrun`, which resolves against whatever toolchain
+        # `xcode-select` currently points at. Running this before selection
+        # (the first cut of this step did) would lint against the runner
+        # image's default Xcode instead of the caller's pinned
+        # `xcode-version`, for every caller except a self-hosted one that
+        # sets `skip-xcode-select: true` (only idlewick today) — meaning the
+        # gate's verdict would silently drift whenever GitHub rotates the
+        # `macos-15` image's default Xcode, independent of what the caller
+        # actually pinned. This ordering, not toolchain-bundling by itself,
+        # is what makes the lint result comparable across hosted and
+        # self-hosted callers. `--strict` makes any diagnostic (not just
+        # errors) a non-zero exit.
+        if: inputs.lint == true
+        run: |
+          set -euo pipefail
+          # Lint top-level dirs (recursed into, .swift-filtered by
+          # --recursive, symlinks followed) plus top-level *.swift files;
+          # .build and .git are excluded — .build holds SwiftPM's fetched
+          # dependency checkouts (not this repo's own code) plus
+          # plugin-generated sources, neither of which this caller's style
+          # pass ever wrote or owns. `swift-format lint` only filters to
+          # *.swift when recursing into a directory — an explicit file
+          # argument is parsed as Swift regardless of extension, so passing
+          # e.g. README.md or Package.resolved directly floods the run with
+          # parse errors on non-Swift syntax.
+          targets=()
+          for entry in * .[!.]*; do
+            [ -e "$entry" ] || continue
+            case "$entry" in
+              .build|.git) continue ;;
+            esac
+            if [ -d "$entry" ] || [[ "$entry" == *.swift ]]; then
+              targets+=("$entry")
+            fi
+          done
+          # A repo's top-level always has SOME directory (.github at least),
+          # so `targets` is never empty in practice and an "if no targets,
+          # exit 0" check is dead code that never fires — the real silent
+          # hole is a repo whose Swift sources are found by neither branch
+          # (e.g. entirely behind a top-level symlink that recursion doesn't
+          # follow). Count real *.swift files in scope, following symlinks
+          # to match --follow-symlinks below, and fail loudly rather than
+          # let a check-nothing run report the same green as a clean one.
+          swift_file_count=$(find -L "${targets[@]}" -type f -name '*.swift' 2>/dev/null | wc -l | tr -d ' ')
+          if [ "$swift_file_count" -eq 0 ]; then
+            echo "::error title=No Swift sources found::lint is enabled but zero *.swift files were found under: ${targets[*]:-<none>}. A green lint check that found nothing to check is indistinguishable from a genuinely clean one, so this fails loudly instead of passing silently. If this repo truly has no Swift sources, disable the lint input rather than let it report a false pass." >&2
+            exit 1
+          fi
+          echo "Linting $swift_file_count Swift file(s)."
+          xcrun swift-format lint --recursive --strict --parallel --follow-symlinks "${targets[@]}"
 
       - name: Build (spm)
         if: inputs.mode == 'spm'
