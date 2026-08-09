@@ -221,6 +221,13 @@ Builds + tests the caller against `ManifoldKit/ManifoldKit`'s `core-ref` HEAD
 it ships as a release. A failure here means core moved, not that the caller
 regressed.
 
+`swift package edit` drops the `manifoldkit` entry from `Package.resolved`,
+so a caller test that derives core identity from the resolved pin (rather
+than an env override) fails deterministically under canary conditions —
+see manifold-mlx#189. The `Build`/`Test` steps run with `MANIFOLD_CORE_COMMIT`
+set to the checked-out core SHA so callers whose identity-resolution chain
+checks that env var first can exercise their real resolution logic instead.
+
 | Input | Default | Notes |
 |---|---|---|
 | `core-ref` | `main` | Any branch/ref in `ManifoldKit/ManifoldKit`. |

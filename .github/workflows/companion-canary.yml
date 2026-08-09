@@ -37,6 +37,15 @@ jobs:
           repository: ManifoldKit/ManifoldKit
           ref: ${{ inputs.core-ref }}
           path: core
+      - name: Export checked-out core commit
+        # `swift package edit` (below) drops the `manifoldkit` entry from
+        # Package.resolved, so any caller test that derives core identity
+        # from the resolved pin fails deterministically under canary
+        # conditions, independent of whether core actually regressed
+        # (manifold-mlx#189). MANIFOLD_CORE_COMMIT outranks the
+        # Package.resolved fallback in that identity chain, so exporting it
+        # here lets callers exercise their real resolution logic instead.
+        run: echo "MANIFOLD_CORE_COMMIT=$(git -C core rev-parse HEAD)" >> "$GITHUB_ENV"
       - name: Select newest Xcode 26 toolchain
         # The image default mis-resolves the dependency graph; Swift 6.3
         # (Xcode 26.3) prunes trait-disabled edges correctly — same
