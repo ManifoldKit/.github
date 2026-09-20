@@ -17,6 +17,11 @@ name: Companion canary (reusable)
 on:
   workflow_call:
     inputs:
+      runner:
+        description: "macOS runner label compatible with the companion deployment target."
+        required: false
+        type: string
+        default: macos-15
       core-ref:
         description: "ManifoldKit/ManifoldKit ref to canary against."
         required: false
@@ -28,7 +33,7 @@ permissions:
 
 jobs:
   canary:
-    runs-on: macos-15
+    runs-on: ${{ inputs.runner }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
       - name: Check out ManifoldKit at core-ref

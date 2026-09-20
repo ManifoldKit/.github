@@ -90,6 +90,9 @@ jobs:
       # fixture that must fail, plus happy paths that must pass. Both bugs found
       # reviewing this PR were cases where the linter exited 0 and printed
       # success — exactly what these fixtures now catch.
+      - name: Test companion runner inputs
+        run: python3 .github/scripts/test_companion_runner_inputs.py
+
       - name: Test the composite linter
         run: python3 .github/scripts/test_lint_composite_actions.py
 

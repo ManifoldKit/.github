@@ -43,10 +43,11 @@ Run the same gate locally before pushing:
 brew install actionlint shellcheck                          # once
 actionlint                                                  # workflows
 python3 .github/scripts/test_lint_composite_actions.py      # linter tripwires
+python3 .github/scripts/test_companion_runner_inputs.py     # runner wiring tripwires
 python3 .github/scripts/lint-composite-actions.py .         # composite actions
 ```
 
-All three are what CI runs. The composite linter needs PyYAML (`pip3 install
+These are the checks CI runs. The composite linter needs PyYAML (`pip3 install
 pyyaml` locally; the runner image already ships it) and shellcheck on `PATH` —
 it refuses to run without shellcheck rather than silently checking less.
 
@@ -99,6 +100,7 @@ PAT-authored so it trips the caller's own push-triggered `release-please.yml`.
 
 | Input | Default | Notes |
 |---|---|---|
+| `runner` | `macos-15` | Runner label; OS 26 companions pass `macos-26` for build and test execution. |
 | `version` (required) | — | X.Y.Z, no leading `v`. Caller resolves this from its trigger payload before calling. |
 | `pin-mode` | `upToNextMinor` | `upToNextMinor` rewrites `.upToNextMinor(from: "X.Y.Z")` (manifold-llama, manifold-mlx). `exact` rewrites `exact: "X.Y.Z"` (manifold-eval). |
 | `gate-command` | `swift build && swift test` | Runs after `swift package resolve` against the new pin. |
@@ -215,6 +217,13 @@ Both `secrets: inherit` and an explicit `secrets:` mapping work — use
 differently-scoped token.
 
 ## `companion-canary.yml`
+
+The optional `runner` input defaults to `macos-15` for existing callers.
+Companions targeting OS 26 must pass `runner: macos-26`; the canary builds
+and executes tests on that host. The same input is available on
+`companion-core-bump.yml`, so a successful canary and the subsequent pin-bump
+gate can use the same runtime floor.
+
 
 Builds + tests the caller against `ManifoldKit/ManifoldKit`'s `core-ref` HEAD
 (default `main`) via `swift package edit`, catching a core seam move before
