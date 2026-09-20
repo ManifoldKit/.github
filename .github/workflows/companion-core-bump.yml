@@ -40,6 +40,11 @@ name: Companion core-bump (reusable)
 on:
   workflow_call:
     inputs:
+      runner:
+        description: "macOS runner label compatible with the companion deployment target."
+        required: false
+        type: string
+        default: macos-15
       version:
         description: >
           ManifoldKit version to pin to, WITHOUT a leading "v" (e.g. "0.63.0").
@@ -94,7 +99,7 @@ permissions:
 
 jobs:
   bump:
-    runs-on: macos-15
+    runs-on: ${{ inputs.runner }}
     steps:
       - name: Validate version input
         env:
